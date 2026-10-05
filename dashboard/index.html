@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Pi 会话面板</title><link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script></head>
+<body>
+  <header><div><span class="eyebrow">CODEX × PI</span><h1>会话面板</h1></div><div class="refresh"><span id="connection" role="status">正在连接…</span><button id="pause" type="button">暂停更新</button></div></header>
+  <main>
+    <div class="summary" id="summary">正在读取本机会话…</div>
+    <div id="error" class="notice error" role="alert" hidden></div>
+    <section class="toolbar" aria-label="筛选会话">
+      <label>搜索会话<input id="search" type="search" placeholder="名称、模型、目录或会话身份"></label>
+      <label>状态<select id="status"><option value="all">全部状态</option><option value="active">正在工作</option><option value="waiting">等待答复</option><option value="completed">已完成</option><option value="failed">失败</option><option value="disconnected">控制进程已离线</option><option value="closed">已关闭</option></select></label>
+      <label class="check"><input id="history" type="checkbox">显示已关闭会话</label>
+    </section>
+    <div class="workspace">
+      <section class="list" aria-label="会话列表">
+        <div class="table-scroll"><table><thead><tr><th>会话 / 模型</th><th>状态 / 当前动作</th><th>最近更新</th></tr></thead><tbody id="agents"></tbody></table></div>
+        <p id="empty" class="empty" hidden>还没有会话。通过 Codex 的 pi-subagents 创建代理后会自动显示。</p>
+      </section>
+      <section class="detail" aria-label="会话详情"><div id="detail-empty" class="empty">选择左侧会话，查看它正在做什么。</div><div id="detail" hidden>
+        <div class="detail-heading"><div><h2 id="agent-name"></h2><p id="agent-model"></p></div><span id="agent-status" class="badge"></span></div>
+        <dl id="metadata"></dl><div id="questions"></div><div id="agent-error" class="notice error" hidden></div>
+        <nav class="tabs" aria-label="会话记录"><button type="button" data-tab="messages" aria-pressed="true">执行记录</button><button type="button" data-tab="events" aria-pressed="false">状态与通信</button><button type="button" data-tab="result" aria-pressed="false">最近结果</button></nav>
+        <div id="records" aria-live="off"></div><p id="record-note" class="hint"></p>
+      </div></section>
+    </div>
+    <footer>本机只读 · 每 2 秒更新 · 已完成表示模型执行结束，成果还需检查。等待答复的问题由所属 Codex 聊天处理。</footer>
+  </main>
+</body></html>

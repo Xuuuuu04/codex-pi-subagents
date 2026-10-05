@@ -5,6 +5,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { Manager } from './manager.js';
+import { dashboardInfo, ensureDashboard } from './dashboard-launcher.js';
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 export const instructions = `Pi external subagents: use list_models then spawn_agent with an explicit provider/model, absolute cwd, ownedPaths and concrete acceptance criteria. Spawn returns immediately; accepted does not mean completed. While children run, use wait_agent with each returned nextSequence as after[agentId], read_agent for details and reply_question for blocking questions. Send messages via send_message; steer is delivered at a Pi turn boundary. Waits return events, including progress; inspect status and keep waiting until completed, failed, interrupted or closed. Change models only when idle, or interrupt first; next_run restores the previous model after a settled run. Claims of success need actual changes/checks, not model prose. MCP cannot automatically inject native Codex subagent messages or wake an ended parent turn. Keep coordinating until the assigned tasks finish. Git worktrees preserve only the explicit committed baseRef; review/merge changes separately. Shared ownership is coordination, not filesystem security. Credentials remain in Pi. Do not send provider secrets in tools. Never auto-deploy or send external messages. Use resume_agent for saved sessions after reconnecting; do not rerun completed work blindly.`;
@@ -39,9 +40,9 @@ export async function createServer(options = {}) {
     ownedPaths: z.array(z.string().min(1)).min(1).max(100), context: z.string().max(40000).default(''),
     workspaceMode: z.enum(['auto', 'worktree', 'shared']).default('auto'), baseRef: z.string().optional(), thinking: thinking.default('high'),
   }, values => manager.spawn(values));
-  register('list_agents', 'Inspect current children, or include saved sessions from previous connections for explicit recovery.', {
+  register('list_agents', 'Inspect current children, or include saved sessions for explicit recovery. Returns the private local dashboard URL when running.', {
     includeSaved: z.boolean().default(false),
-  }, ({ includeSaved }) => ({ agents: manager.list(includeSaved) }), true);
+  }, ({ includeSaved }) => ({ agents: manager.list(includeSaved), dashboardUrl: dashboardInfo(manager.storage.root)?.url }), true);
   register('read_agent', 'Read durable agent status and recent events after a sequence. Optionally retrieve a bounded transcript from the active Pi process.', {
     agentId: id, afterSequence: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(50), transcript: z.boolean().default(false),
   }, async ({ agentId, afterSequence, limit, transcript }) => {
@@ -78,6 +79,11 @@ export async function createServer(options = {}) {
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  // Custom verification roots do not create a persistent service. Default production connections reuse one viewer.
+  if (!process.env.PI_SUBAGENTS_STATE_DIR && process.env.PI_DASHBOARD_AUTO !== '0') {
+    try { await ensureDashboard(); }
+    catch (error) { process.stderr.write(`Pi dashboard: ${error.message}\n`); }
+  }
   const { server, manager } = await createServer();
   let shuttingDown = false;
   async function shutdown() {

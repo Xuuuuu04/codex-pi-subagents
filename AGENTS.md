@@ -8,6 +8,7 @@
 - `npm ci --ignore-scripts` 安装固定依赖；`npm start` 启动 stdio MCP。
 - `npm run check` 检查 JavaScript；`npm test` 检查行为，不调用真实模型。
 - `npm run install:codex` 接入本机 Codex；`npm run uninstall:codex` 移除接入。
+- `npm run dashboard` 启动或复用本机只读会话面板；默认 MCP 启动时自动启动。
 - `npm run verify:live` 真实国模验证；`node scripts/verify-codex.js` 真实 Codex 接入验证。
 
 ## 目录地图
@@ -17,6 +18,7 @@
 - `src/messages.js`：本机消息接收、问题等待与答复。
 - `src/storage.js`：私密状态和事件保存。
 - `src/workspace.js`：文件范围、独立 Git 工作目录。
+- `src/dashboard*.js`、`dashboard/`：只读数据、私密本机服务、独立启动与页面。
 - `extensions/communication.ts`：子代理可调用的报告和提问工具。
 - `scripts/`：检查、安装、真实验收。
 - `tests/`：按功能组织的行为检查；`tests/helpers/` 为隔离 Pi 模拟进程。
@@ -39,6 +41,7 @@ Codex 调用 MCP → 管理器创建或控制 Pi → Pi RPC 输出事件 → 记
 - 并行 Git 开发默认独立 worktree；共享目录必须声明不重叠的文件范围。
 - 临时模型切换在一次工作完全结束后恢复；运行中换模型须先明确停止。
 - 关闭进程保留会话和代码；恢复不重复旧任务。
+- 面板只读现有文件，不调用代理控制命令；缺少活跃控制进程的工作状态明确显示离线。
 
 ## 不要做的事
 - 不承诺 MCP 可以自动唤醒已经结束的 Codex 父会话或复制原生子代理界面。
@@ -54,3 +57,4 @@ Codex 调用 MCP → 管理器创建或控制 Pi → Pi RPC 输出事件 → 记
 - 新增 MCP 后当前已运行的 Codex 聊天可能尚未加载；重启客户端。
 - 安装使用绝对 Node/Pi 路径；移动项目或移除对应 Node 版本后重跑安装。
 - 配置备份可能包含其他服务的凭据，仅留本机；不进入提交或报告。
+- 面板查看令牌放 URL fragment，读接口需认证；不允许任意路径读取、远程绑定或 HTML 执行日志内容。
