@@ -1,0 +1,30 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+const root = fileURLToPath(new URL('..', import.meta.url));
+const directory = path.join(root, '.agents/records', 'codex-' + Date.now());
+fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-pi-acceptance-'));
+const prompt = `这是用户授权的隔离 MCP 接入验证。请通过 pi-subagents MCP 工具执行：1. list_models(provider="zhipu")。2. spawn_agent(cwd=${JSON.stringify(cwd)}, provider="zhipu", model="glm-5.3", thinking="low", ownedPaths=["demo"], workspaceMode="shared", prompt="只回复 CODEX-PI-READY。不要调用工具或修改文件。")。3. 用 read_agent / wait_agent 等待实际完成，进度事件不代表完成。4. 确认返回文字含 CODEX-PI-READY，close_agent 关闭该代理。不要执行其他工作。最后只报告 PASS 或具体失败原因。`;
+const command = ['exec', '--json', '--skip-git-repo-check', '-C', cwd, '-m', 'gpt-6.1-sol', '-c', 'model_reasoning_effort="low"', '-c', `mcp_servers.pi-subagents.env.PI_SUBAGENTS_STATE_DIR=${JSON.stringify(path.join(directory, 'state'))}`, prompt];
+const child = spawn('codex', command, { stdio: ['ignore', 'pipe', 'pipe'] });
+const output = []; const errors = [];
+child.stdout.on('data', chunk => output.push(chunk)); child.stderr.on('data', chunk => errors.push(chunk));
+const timer = setTimeout(() => { child.kill('SIGTERM'); }, 240000);
+const exitCode = await new Promise((resolve, reject) => { child.on('error', reject); child.on('exit', code => resolve(code)); });
+clearTimeout(timer);
+const records = Buffer.concat(output).toString('utf8').split('\n').filter(Boolean).map(line => {
+  try { return JSON.parse(line); } catch { return { type: 'unparsed', text: line }; }
+});
+fs.writeFileSync(path.join(directory, 'events.jsonl'), records.map(r => JSON.stringify(r)).join('\n') + '\n', { mode: 0o600 });
+fs.writeFileSync(path.join(directory, 'stderr.txt'), Buffer.concat(errors), { mode: 0o600 });
+const items = records.filter(r => r.type === 'item.completed').map(r => r.item);
+const calls = items.filter(i => i.type === 'mcp_tool_call');
+const final = items.filter(i => i.type === 'agent_message').at(-1)?.text;
+const result = { exitCode, final, toolCalls: calls.map(c => ({ server: c.server, tool: c.tool, status: c.status })), completed: exitCode === 0 && /^PASS\b/.test(final || '') && calls.some(c => c.tool === 'spawn_agent') && calls.some(c => c.tool === 'close_agent') };
+fs.writeFileSync(path.join(directory, 'result.json'), JSON.stringify(result, null, 2) + '\n', { mode: 0o600 });
+fs.rmSync(cwd, { recursive: true, force: true });
+console.log(JSON.stringify(result, null, 2)); console.log('Evidence: ' + directory);
+if (!result.completed) process.exitCode = 1;

@@ -1,0 +1,20 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import { createServer } from '../src/server.js';
+import { setup, processFactory } from './helpers/setup.js';
+test('MCP client discovers tools, creates an agent and receives structured errors', async t => {
+  const { cwd, manager: helper, track } = await setup(t);
+  const { server, manager } = await createServer({ root: helper.storage.root + '-mcp', processFactory });
+  track(manager);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'test', version: '1' });
+  t.after(async () => { await client.close(); await server.close(); });
+  await server.connect(serverTransport); await client.connect(clientTransport);
+  const tools = await client.listTools(); assert.equal(tools.tools.length, 11);
+  const result = await client.callTool({ name: 'spawn_agent', arguments: { cwd, prompt: 'hello', provider: 'fake', model: 'cheap', ownedPaths: ['src'], workspaceMode: 'shared' } });
+  assert.equal(result.isError, undefined); assert.ok(result.structuredContent.result.id);
+  const error = await client.callTool({ name: 'set_agent_model', arguments: { agentId: result.structuredContent.result.id, provider: 'fake', model: 'missing' } });
+  assert.equal(error.isError, true); assert.match(error.content[0].text, /unavailable/);
+});
