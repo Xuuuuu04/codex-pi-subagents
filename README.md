@@ -41,6 +41,7 @@ npm run install:codex
 
 | 工具 | 用途 |
 | --- | --- |
+| `get_quota` | 直接用 Pi 凭据查询各家套餐额度或余额；默认查询已配置的支持服务，不依赖 CodexBar |
 | `list_models` | 从本机 Pi 获取已配置认证的模型，按服务和名称筛选；不返回凭据 |
 | `spawn_agent` | 创建会话，指定模型、思考强度、目录、文件范围和任务；立即返回身份 |
 | `list_agents` | 查看当前子代理；可额外列出以前保存的会话 |
@@ -88,3 +89,21 @@ node scripts/verify-codex.js  # 已安装后，由真实 Codex 调用 MCP 和 GL
 真实验证在系统临时目录执行演示开发包，不接触生产数据。原始会话和结果留在 `.agents/records/live-*/`、`.agents/records/codex-*/`。这些资料包含提示和模型回答，按私密本机资料处理；确认结果且不再需要复现后可以删除。当前验证结果见 [docs/verification.md](docs/verification.md)。
 
 代码入口与维护要求见 [AGENTS.md](AGENTS.md)。
+
+## 额度查询
+
+调用 `get_quota()` 默认查询 Pi 已配置且支持的服务；用 `provider` 查询一家：`openai-codex`、`zhipu`、`zai`、`minimax-tokenplan`、`deepseek` 或 `opencode-go`。读取 `PI_CODING_AGENT_DIR/auth.json`；未设置时使用 `~/.pi/agent/auth.json`。不依赖 CodexBar、Codex CLI、浏览器 cookie 或额外库，不复制或改写凭据。
+
+| 服务 | 查询结果 |
+| --- | --- |
+| Codex | 套餐、实际返回的 5 小时/每周窗口、credits 余额、重置卡 |
+| GLM 国内 / Z.ai | Coding 套餐窗口、剩余百分比、重置时间；搜索/阅读工具次数单独返回 |
+| MiniMax Token Plan | 按 general/video 等服务列出当前周期和每周百分比、剩余次数、状态、重置时间 |
+| DeepSeek | 各币种余额、赠送余额与充值余额；不伪造套餐百分比 |
+| OpenCode Go | rolling、每周、每月用量与重置时间 |
+
+`all` 返回各家独立结果，一家失败不隐藏其他数据；未支持的 Pi 服务列入 `unsupportedProviders`。服务可能共用同一账号，不能相加。缺失字段为 `null`，不能当成 100% 或 0%。credits 与人民币/美元余额分别保留单位。工具不估算本任务未来消耗。MiniMax 的 `usage_count` 在 remains 接口里表示剩余次数；次数和百分比矛盾时给出警告，状态也保留。
+
+额度可用不代表获得花费授权。Codex 仍须遵守用户明确允许的任务、模型和预算范围；额外付费或使用重置卡须另有授权。工具只查询，不购买、不兑换、不调用模型。Codex 凭据过期时通过 Pi 续期；查询工具不执行命令型 key、不改写认证文件。重置卡查询失败会保留有效套餐额度并返回警告。
+
+查询方式参考 [CodexBar 官方实现说明](https://github.com/steipete/CodexBar/blob/main/docs/codex.md)和各服务接口；实现独立编写，没有引入或复制它的 Swift 工程。Codex、GLM 和部分套餐接口可能变化，接口失败或格式未知会明确报错。DeepSeek 余额接口见 [官方文档](https://api-docs.deepseek.com/api/get-user-balance/)。
