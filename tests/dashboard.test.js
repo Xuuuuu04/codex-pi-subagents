@@ -45,6 +45,14 @@ test('private read-only HTTP rejects missing token, other hosts and mutation req
   const detail = await (await fetch(origin + '/api/agents/' + a.id, { headers })).json(); assert.equal(detail.agent.status, 'completed');
   assert.equal((await fetch(origin + '/api/agents/not-an-id', { headers })).status, 400);
   assert.equal((await fetch(origin + '/', { headers })).status, 200);
+  const page = await fetch(origin + '/');
+  const cookie = page.headers.get('set-cookie');
+  assert.match(cookie, /HttpOnly; SameSite=Strict/);
+  const fromPlainAddress = await fetch(origin + '/api/agents', { headers: { cookie: cookie.split(';')[0], 'sec-fetch-site': 'same-origin' } });
+  assert.equal(fromPlainAddress.status, 200);
+  assert.equal((await fromPlainAddress.json()).agents[0].id, a.id);
+  assert.equal((await fetch(origin + '/api/agents', { headers: { cookie: cookie.split(';')[0], 'sec-fetch-site': 'cross-site' } })).status, 403);
+  assert.equal((await fetch(origin + '/', { headers: { 'sec-fetch-site': 'cross-site' } })).status, 403);
   assert.equal(manager.read(a.id).agent.status, 'completed');
 });
 

@@ -16,7 +16,7 @@ async function running(root) {
   const url = new URL(info.url);
   if (url.hostname !== '127.0.0.1') throw new Error('Invalid local dashboard address');
   try {
-    const response = await fetch(new URL('/api/health', url), { headers: { authorization: `Bearer ${url.hash.slice(1)}` }, signal: AbortSignal.timeout(500) });
+    const response = await fetch(new URL('/api/health', url), { headers: { authorization: `Bearer ${info.token || url.hash.slice(1)}` }, signal: AbortSignal.timeout(500) });
     const health = await response.json();
     return response.ok && health.service === 'pi-dashboard' && health.pid === info.pid ? info : null;
   } catch { return null; } // Only a health probe; never substitute an empty agent result.

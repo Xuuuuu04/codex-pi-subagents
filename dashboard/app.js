@@ -1,12 +1,9 @@
 const $ = selector => document.querySelector(selector);
 const labels = { starting: '正在启动', running: '运行中', waiting: '等待答复', finishing: '正在结束', idle: '空闲', completed: '已完成', failed: '失败', interrupted: '已中断', closed: '已关闭', disconnected: '控制进程已离线' };
 const working = new Set(['starting', 'running', 'waiting', 'finishing']);
-let token = location.hash.slice(1) || sessionStorage.getItem('pi-dashboard-token') || '';
-function captureToken() {
-  if (!location.hash) return;
-  token = location.hash.slice(1); sessionStorage.setItem('pi-dashboard-token', token); history.replaceState(null, '', location.pathname);
-}
-captureToken();
+// Old token links still open the ordinary page. Authentication now stays in an HttpOnly cookie.
+if (location.hash) history.replaceState(null, '', location.pathname);
+sessionStorage.removeItem('pi-dashboard-token');
 let agents = []; let selected = ''; let tab = 'messages'; let paused = false; let fetching = false; let lastDetail = '';
 const time = value => value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
 const date = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
@@ -14,7 +11,13 @@ const model = agent => `${agent.model?.provider || '未知服务'} / ${agent.mod
 function element(tag, text, className) { const e = document.createElement(tag); if (text != null) e.textContent = text; if (className) e.className = className; return e; }
 function badge(agent) { return element('span', labels[agent.status] || agent.status, `badge ${agent.status}`); }
 async function api(path) {
-  const response = await fetch(path, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) });
+  const read = () => fetch(path, { credentials: 'same-origin', signal: AbortSignal.timeout(8000) });
+  let response = await read();
+  if (response.status === 401) {
+    // Recover a viewer cookie after the independent dashboard service restarts; agent ownership is untouched.
+    const bootstrap = await fetch('/', { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (bootstrap.ok) response = await read();
+  }
   const result = await response.json(); if (!response.ok) throw new Error(result.error || `读取失败：${response.status}`); return result;
 }
 function showError(message) { $('#error').textContent = message; $('#error').hidden = !message; }
@@ -98,4 +101,4 @@ $('#search').addEventListener('input', renderList); $('#status').addEventListene
 $('#pause').addEventListener('click', () => { paused = !paused; $('#pause').textContent = paused ? '继续更新' : '暂停更新'; if (paused) $('#connection').textContent = '已暂停 · 页面数据不再更新'; else refresh(); });
 for (const button of document.querySelectorAll('[data-tab]')) button.addEventListener('click', () => { tab = button.dataset.tab; lastDetail = ''; for (const other of document.querySelectorAll('[data-tab]')) other.setAttribute('aria-pressed', String(other === button)); refreshDetail().catch(error => showError(error.message)); });
 refresh(); setInterval(refresh, 2000);
-window.addEventListener('hashchange', () => { captureToken(); paused = false; $('#pause').textContent = '暂停更新'; refresh(); });
+window.addEventListener('hashchange', () => { history.replaceState(null, '', location.pathname); paused = false; $('#pause').textContent = '暂停更新'; refresh(); });
