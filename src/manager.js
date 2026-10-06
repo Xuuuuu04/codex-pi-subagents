@@ -6,13 +6,16 @@ import { EventEmitter } from 'node:events';
 import { PiProcess } from './rpc-client.js';
 import { Storage, processAlive } from './storage.js';
 import { MessageChannel } from './messages.js';
+import { MessageStore } from './message-store.js';
+import { agentPolicy, assertModelAllowed, reserveRequest } from './agent-policy.js';
+import { sandboxProfile, canonicalPath } from './tool-sandbox.js';
 import { createWorkspace, validateOwnedPaths, pathsOverlap } from './workspace.js';
 
 const extension = fileURLToPath(new URL('../extensions/communication.ts', import.meta.url));
 const activeStatuses = new Set(['starting', 'running', 'waiting', 'finishing']);
 const textOf = message => (message?.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n');
 
-/** Own Pi processes, durable sessions, model changes and events for one MCP connection. */
+/** Own Pi processes, durable sessions, model changes and events for an independent controller. */
 export class Manager extends EventEmitter {
   constructor({ root, executable = 'pi', maxAgents = 8, processFactory = options => new PiProcess(options) }) {
     super();
@@ -22,6 +25,7 @@ export class Manager extends EventEmitter {
     this.maxAgents = maxAgents;
     this.processFactory = processFactory;
     this.owner = randomUUID();
+    this.messages = new MessageStore(this.storage);
     this.agents = new Map();
     this.channel = new MessageChannel(this);
     this.closed = false;
@@ -36,7 +40,7 @@ export class Manager extends EventEmitter {
   summary(agent) {
     const r = agent.record;
     return { id: r.id, name: r.name, status: r.status, model: r.model, thinking: r.thinking, workspace: r.workspace,
-      sequence: r.sequence, questionIds: r.questionIds, lastText: r.lastText?.slice(-12000), error: r.error,
+      policy: r.policy, modelRequests: r.modelRequests, limitReason: r.limitReason, sequence: r.sequence, questionIds: r.questionIds, lastText: r.lastText?.slice(-12000), error: r.error,
       temporaryModel: r.restoreModel, usage: r.usage, sessionFile: r.sessionFile, createdAt: r.createdAt, updatedAt: r.updatedAt };
   }
   event(agent, type, data = {}) {
@@ -85,23 +89,28 @@ export class Manager extends EventEmitter {
       if (processAlive(previous.pid)) throw new Error('Saved agent is already controlled by a live process');
       fs.unlinkSync(lock);
     }
+    if (record.piPid && processAlive(record.piPid)) throw new Error('Saved Pi process is still alive after its controller disconnected; stop it before recovering, to avoid duplicate work');
     const fd = fs.openSync(lock, 'wx', 0o600);
     fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, owner: this.owner })); fs.closeSync(fd);
     record.owner = this.owner; record.ownerPid = process.pid;
     return lock;
   }
-  async spawn({ cwd, prompt, provider, model, name, ownedPaths, workspaceMode = 'auto', baseRef, thinking = 'high', context = '' }) {
+  async spawn({ cwd, prompt, provider, model, name, ownedPaths, workspaceMode = 'auto', baseRef, thinking = 'high', context = '', parentId, policy }) {
     if (!path.isAbsolute(cwd)) throw new Error('cwd must be an absolute directory path');
     this.capacity(); await this.validateModel({ provider, model }); this.capacity();
     const paths = validateOwnedPaths(ownedPaths);
     const original = fs.realpathSync(cwd);
     if (workspaceMode === 'shared' || workspaceMode === 'auto') {
       for (const a of this.agents.values()) {
-        if (a.record.workspace?.mode === 'shared' && a.rpc && !a.rpc.exited && pathsOverlap(paths.map(p => path.resolve(original, p)), a.record.ownedPaths.map(p => path.resolve(a.record.workspace.sourceCwd, p)))) throw new Error('Owned paths overlap another live agent in the shared directory');
+        if (a.record.workspace?.mode === 'shared' && a.rpc && !a.rpc.exited && pathsOverlap(paths.map(p => canonicalPath(path.resolve(original, p))), a.record.ownedPaths.map(p => canonicalPath(path.resolve(a.record.workspace.sourceCwd, p))))) throw new Error('Owned paths overlap another live agent in the shared directory');
       }
     }
+    for (const saved of this.storage.all()) {
+      if (this.agents.has(saved.id) || saved.workspace?.mode !== 'shared' || !processAlive(saved.ownerPid) || !fs.existsSync(path.join(this.storage.directory(saved.id), 'owner.lock'))) continue;
+      if (pathsOverlap(paths.map(p => canonicalPath(path.resolve(original, p))), saved.ownedPaths.map(p => canonicalPath(path.resolve(saved.workspace.cwd, p))))) throw new Error('Owned paths overlap a live agent from an earlier controller');
+    }
     const id = randomUUID();
-    const record = { id, name: name || id.slice(0, 8), model: { provider, model }, thinking, ownedPaths: paths, context,
+    const record = { id, parentId, policy: agentPolicy(policy, { provider, model }), modelRequests: 0, name: name || id.slice(0, 8), model: { provider, model }, thinking, ownedPaths: paths, context,
       status: 'starting', sequence: 0, questionIds: [], createdAt: new Date().toISOString(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reportedCost: 0 } };
     const lock = this.claim(record);
     try {
@@ -125,21 +134,31 @@ export class Manager extends EventEmitter {
   }
   async launch(agent) {
     const r = agent.record;
-    agent.messageToken = randomUUID();
-    const instructions = `You are an external Pi subagent controlled by parent Codex. Your ID: ${r.id}.\nOwned paths: ${r.ownedPaths.join(', ')}. Do not edit siblings' files or revert others' changes. Your directory is ${r.workspace.cwd}. Ownership is a coordination rule, not a sandbox.\nUse agent_message(recipient="parent", message=...) for important progress. Use ask_parent for unresolved blocking decisions; its tool result is the parent's answer. Finish with changed files, checks actually run, remaining issues. Never claim tests passed without running them. Do not deploy or send external messages without explicit parent authorization.\nProvided context:\n${r.context}`;
+    agent.messageToken = randomUUID(); agent.policyReady = false;
+    r.policy ||= agentPolicy({}, r.model);
+    const tempDir = path.join(this.storage.directory(r.id), 'tool-tmp'); fs.mkdirSync(tempDir, { recursive: true, mode: 0o700 });
+    const toolPolicy = { ...r.policy, cwd: r.workspace.cwd, ownedPaths: r.ownedPaths, stateRoot: this.storage.root, tempDir };
+    if (!this.processFactory.testOnly) sandboxProfile(toolPolicy);
+    const policyFile = path.join(this.storage.directory(r.id), 'tool-policy.json'); fs.writeFileSync(policyFile, JSON.stringify(toolPolicy), { mode: 0o600 });
+    const instructions = `You are an external Pi subagent controlled by parent Codex. Your ID: ${r.id}.\nOwned paths: ${r.ownedPaths.join(', ')}. Do not edit siblings' files or revert others' changes. Your directory is ${r.workspace.cwd}. File tools and shell descendants are restricted to the assigned workspace and owned paths. Shell networking is disabled unless explicitly authorized.\nUse agent_message(recipient="parent", message=...) for important progress. Use ask_parent for unresolved blocking decisions; its tool result is the parent's answer. Finish with changed files, checks actually run, remaining issues. Never claim tests passed without running them. Do not deploy or send external messages without explicit parent authorization.\nProvided context:\n${r.context}`;
     const args = ['--mode', 'rpc', '--offline', '--provider', r.model.provider, '--model', r.model.model, '--thinking', r.thinking,
-      '--extension', extension, '--append-system-prompt', instructions, '--session-dir', path.join(this.storage.directory(r.id), 'sessions')];
+      '--no-extensions', '--extension', extension, '--extension', fileURLToPath(new URL('../extensions/policy.ts', import.meta.url)), '--append-system-prompt', instructions, '--session-dir', path.join(this.storage.directory(r.id), 'sessions')];
     if (r.sessionFile) args.push('--session', r.sessionFile);
     agent.rpc = this.processFactory({ executable: this.executable, args, cwd: r.workspace.cwd, env: {
-      PI_SUBAGENT_ID: r.id, PI_SUBAGENT_ENDPOINT: this.channel.endpoint, PI_SUBAGENT_TOKEN: agent.messageToken,
+      PI_SUBAGENT_POLICY: policyFile, PI_SUBAGENT_ID: r.id, PI_SUBAGENT_ENDPOINT: this.channel.endpoint, PI_SUBAGENT_TOKEN: agent.messageToken,
     } });
+    r.piPid = agent.rpc.child.pid;
     agent.rpc.on('event', event => this.onPiEvent(agent, event));
     agent.rpc.on('stopped', error => {
       if (agent.closing) return;
-      r.status = 'failed'; r.error = error.message;
+      r.status = 'failed'; r.error = r.limitReason || error.message;
       this.channel.cancelAgent(r.id); this.event(agent, 'process_failed', { error: error.message }); this.release(agent.lock);
     });
     const state = await agent.rpc.command('get_state');
+    if (!this.processFactory.testOnly) {
+      for (let attempt = 0; attempt < 100 && !agent.policyReady && !agent.rpc.exited; attempt++) await new Promise(resolve => setTimeout(resolve, 50));
+      if (!agent.policyReady) throw new Error('Pi policy extension did not confirm startup; no model work was dispatched');
+    }
     r.sessionFile = state.sessionFile;
     r.status = 'idle'; r.questionIds = []; r.error = undefined;
     this.event(agent, 'ready');
@@ -160,28 +179,40 @@ export class Manager extends EventEmitter {
     } else if (event.type === 'tool_execution_start' || event.type === 'tool_execution_end') {
       this.event(agent, event.type, { toolName: event.toolName, toolCallId: event.toolCallId, isError: event.isError });
     } else if (event.type === 'agent_settled') {
-      r.status = 'finishing';
+      clearTimeout(agent.runtimeTimer); r.status = 'finishing';
       this.serial(agent, async () => {
         if (r.restoreModel) await this.restoreModel(agent);
-        r.status = r.stopReason === 'error' ? 'failed' : r.stopReason === 'aborted' || agent.interrupting ? 'interrupted' : 'completed';
+        r.status = r.limitReason || r.stopReason === 'error' ? 'failed' : r.stopReason === 'aborted' || agent.interrupting ? 'interrupted' : 'completed';
+        if (r.limitReason) r.error = r.limitReason;
         this.event(agent, 'settled', { status: r.status, text: r.lastText, error: r.error });
       }).catch(error => { r.status = 'failed'; r.error = error.message; this.event(agent, 'control_failed', { error: error.message }); });
     } else if (event.type === 'extension_error') this.event(agent, 'extension_error', { error: event.error || event.message });
   }
-  async send(id, message, mode = 'steer') {
+  async send(id, message, mode = 'steer', messageId = randomUUID()) {
     const agent = this.get(id);
     return this.serial(agent, async () => {
       if (!agent.rpc || agent.rpc.exited) throw new Error('Agent process is closed; resume it first');
+      const receipt = this.messages.create(id, { messageId, direction: 'to_agent', sender: 'parent', message, mode });
+      if (receipt.duplicate) return { accepted: receipt.record.state === 'accepted' || receipt.record.state === 'consumed', duplicate: true, receipt: receipt.record, agent: this.summary(agent) };
+      if (agent.record.limitReason) { this.messages.update(id, messageId, { state: 'denied', reason: agent.record.limitReason }); throw new Error('Agent limit reached; obtain authorization and update its policy before more work.'); }
       const busy = activeStatuses.has(agent.record.status);
       if (!busy) {
+        agent.record.runStartedAt = Date.now();
+        clearTimeout(agent.runtimeTimer);
+        agent.runtimeTimer = setTimeout(() => {
+          agent.record.limitReason = 'Maximum running time reached'; this.event(agent, 'budget_limit', { reason: agent.record.limitReason });
+          this.serial(agent, async () => { const rpc = agent.rpc; try { await rpc.command('abort'); } finally { await rpc.close(); } }).catch(error => this.emit('controller_error', error));
+        }, agent.record.policy.maxRuntimeMs); agent.runtimeTimer.unref();
         agent.record.status = 'running'; agent.record.error = undefined; agent.record.stopReason = undefined;
       }
       try {
-        const result = await agent.rpc.command('prompt', { message, ...(busy ? { streamingBehavior: mode === 'follow_up' ? 'followUp' : 'steer' } : {}) });
-        this.event(agent, 'instruction', { mode, disposition: result?.disposition });
+        this.messages.update(id, messageId, { state: 'delivery_attempted' });
+        const result = await agent.rpc.command('prompt', { message: `[Pi message ${messageId}]\n${message}`, ...(busy ? { streamingBehavior: mode === 'follow_up' ? 'followUp' : 'steer' } : {}) });
+        const receipt = this.messages.update(id, messageId, { state: this.messages.all(id).find(value => value.messageId === messageId)?.state === 'consumed' ? 'consumed' : 'accepted', disposition: result?.disposition });
+        this.event(agent, 'instruction', { messageId, mode, disposition: result?.disposition });
         if (result?.disposition === 'handled' && !busy) { agent.record.status = 'idle'; this.storage.save(agent.record); }
-        return { accepted: true, disposition: result?.disposition, agent: this.summary(agent) };
-      } catch (error) { if (!busy) { agent.record.status = 'failed'; agent.record.error = error.message; this.event(agent, 'instruction_failed', { error: error.message }); } throw error; }
+        return { accepted: true, disposition: result?.disposition, receipt, agent: this.summary(agent) };
+      } catch (error) { this.messages.update(id, messageId, { state: this.messages.all(id).find(value => value.messageId === messageId)?.state === 'consumed' ? 'consumed' : 'uncertain', error: error.message }); if (!busy) { agent.record.status = 'failed'; agent.record.error = error.message; this.event(agent, 'instruction_failed', { error: error.message }); } throw error; }
     });
   }
   async restoreModel(agent) {
@@ -195,6 +226,7 @@ export class Manager extends EventEmitter {
   async setModel(id, { provider, model, thinking, scope = 'session' }) {
     const agent = this.get(id);
     await this.validateModel({ provider, model });
+    assertModelAllowed(agent.record.policy, { provider, model });
     return this.serial(agent, async () => {
       this.requireIdle(agent);
       if (agent.record.restoreModel) throw new Error('A temporary model change is already pending. Complete a run or restore it before changing again.');
@@ -209,11 +241,29 @@ export class Manager extends EventEmitter {
       return this.summary(agent);
     });
   }
+  async updatePolicy(id, policy, authorizationReference) {
+    const agent = this.get(id);
+    return this.serial(agent, async () => {
+      if (activeStatuses.has(agent.record.status)) throw new Error('Wait for completion or interrupt before changing policy');
+      const next = agentPolicy(policy, agent.record.model); assertModelAllowed(next, agent.record.model);
+      if (!agent.rpc || agent.rpc.exited) { this.capacity(); agent.lock = this.claim(agent.record); }
+      agent.record.policy = next; agent.record.limitReason = undefined;
+      this.event(agent, 'policy_changed', { policy: agent.record.policy, authorizationReference });
+      // Tool policy is loaded once per Pi process: restart an idle session without replaying work.
+      agent.closing = true; await agent.rpc?.close(); agent.closing = false; await this.launch(agent);
+      return this.summary(agent);
+    });
+  }
+  reserveProviderRequest(id, requestId) {
+    const agent = this.get(id);
+    try { const result = reserveRequest(agent, requestId, this.messages); this.storage.save(agent.record); return result; }
+    catch (error) { this.event(agent, 'budget_limit', { reason: error.message }); throw error; }
+  }
   async interrupt(id) {
     const agent = this.get(id);
     return this.serial(agent, async () => {
       if (!agent.rpc || agent.rpc.exited) throw new Error('Agent process is not running');
-      agent.interrupting = true;
+      clearTimeout(agent.runtimeTimer); agent.interrupting = true;
       try {
         const cleared = await agent.rpc.command('clear_queue');
         this.channel.cancelAgent(id);
@@ -231,7 +281,7 @@ export class Manager extends EventEmitter {
       catch (error) { shutdownError = error.message; }
     }
     return this.serial(agent, async () => {
-      agent.closing = true; this.channel.cancelAgent(id); await agent.rpc?.close();
+      clearTimeout(agent.runtimeTimer); agent.closing = true; this.channel.cancelAgent(id); await agent.rpc?.close();
       agent.record.status = 'closed'; this.event(agent, 'closed'); this.release(agent.lock);
       return { ...this.summary(agent), ...(shutdownError ? { shutdownError } : {}) };
     });
@@ -241,6 +291,9 @@ export class Manager extends EventEmitter {
     const existing = this.agents.get(id);
     if (existing?.rpc && !existing.rpc.exited) throw new Error('Agent already has a live process');
     const record = this.storage.load(id);
+    this.storage.repairEvents(id);
+    record.sequence = Math.max(record.sequence, this.storage.events(id).at(-1)?.sequence || 0);
+    for (const question of this.messages.all(id).filter(value => value.direction === 'question' && value.state === 'stored')) this.messages.update(id, question.messageId, { state: 'cancelled' });
     if (!record.sessionFile || !fs.existsSync(record.sessionFile)) throw new Error('No saved Pi session is available');
     await this.validateModel(record.model); this.capacity();
     const lock = this.claim(record);
@@ -256,9 +309,9 @@ export class Manager extends EventEmitter {
   }
   read(id, afterSequence = 0, limit = 50) {
     const agent = this.get(id);
-    const events = agent.events.filter(e => e.sequence > afterSequence).slice(0, limit);
+    const events = this.storage.events(id, afterSequence, limit);
     return { agent: this.summary(agent), events, nextSequence: events.at(-1)?.sequence ?? Math.min(afterSequence, agent.record.sequence),
-      truncated: agent.events.length > 0 && afterSequence < agent.events[0].sequence - 1 };
+      truncated: events.length > 0 && events[0].sequence > afterSequence + 1 };
   }
   async wait(ids, after = {}, timeoutMs = 25000, signal) {
     ids.forEach(id => this.get(id));

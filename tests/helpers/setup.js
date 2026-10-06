@@ -6,6 +6,7 @@ import { Manager } from '../../src/manager.js';
 import { PiProcess } from '../../src/rpc-client.js';
 export const fakePi = fileURLToPath(new URL('./fake-pi.js', import.meta.url));
 export const processFactory = options => new PiProcess({ ...options, executable: process.execPath, args: [fakePi, ...options.args] });
+processFactory.testOnly = true;
 export async function setup(t, options = {}) {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-subagents-test-'));
   const manager = await new Manager({ root: path.join(cwd, 'state'), processFactory, ...options }).start();
@@ -14,7 +15,7 @@ export async function setup(t, options = {}) {
   return { cwd, manager, track: value => managers.push(value) };
 }
 export function spawn(manager, cwd, prompt = 'done', extra = {}) {
-  return manager.spawn({ cwd, prompt, provider: 'fake', model: 'cheap', ownedPaths: ['src'], workspaceMode: 'shared', ...extra });
+  return manager.spawn({ cwd, prompt, provider: 'fake', model: 'cheap', ownedPaths: ['src'], policy: { allowedModels: [{ provider: 'fake', model: 'cheap' }, { provider: 'fake', model: 'strong' }] }, workspaceMode: 'shared', ...extra });
 }
 export async function settled(manager, id, timeout = 3000) {
   const end = Date.now() + timeout;

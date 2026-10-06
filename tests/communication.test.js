@@ -12,7 +12,7 @@ test('blocking child question is answered explicitly and then completes', async 
   assert.ok(question); assert.equal(manager.read(a.id).agent.status, 'waiting');
   manager.channel.reply(question.questionId, '42');
   assert.equal((await settled(manager, a.id)).lastText, 'ANSWER:42');
-  assert.throws(() => manager.channel.reply(question.questionId, 'again'), /no longer waiting/);
+  assert.throws(() => manager.channel.reply(question.questionId, 'again'), /already answered differently/);
 });
 test('fresh wait cursor blocks, cancellation stops waiting, unauthorized messages fail', async t => {
   const { manager, cwd } = await setup(t);

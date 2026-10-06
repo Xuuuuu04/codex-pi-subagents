@@ -8,6 +8,7 @@ const dir = args.includes('--session-dir') ? flag('--session-dir') : process.cwd
 fs.mkdirSync(dir, { recursive: true });
 const sessionFile = args.includes('--session') ? flag('--session') : path.join(dir, randomUUID() + '.jsonl');
 if (!fs.existsSync(sessionFile)) fs.writeFileSync(sessionFile, '');
+if (process.env.PI_SUBAGENT_ENDPOINT) await fetch(process.env.PI_SUBAGENT_ENDPOINT, { method: 'POST', headers: { authorization: `Bearer ${process.env.PI_SUBAGENT_TOKEN}` }, body: JSON.stringify({ action: 'policy_ready', agentId: process.env.PI_SUBAGENT_ID }) });
 let model = { provider: flag('--provider') || 'fake', id: flag('--model') || 'cheap' };
 let thinkingLevel = flag('--thinking') || 'high';
 let active = false; let timer; let requestAbort;
@@ -45,6 +46,7 @@ process.stdin.on('data', chunk => {
       case 'set_model': model = { provider: command.provider, id: command.modelId }; respond(model); break;
       case 'set_thinking_level': thinkingLevel = command.level; respond(); break;
       case 'prompt':
+        command.message = command.message.replace(/^\[Pi message [0-9a-f-]{36}\]\n/, '');
         if (active) { queue.push(command.message); respond({ disposition: 'queued' }); }
         else { respond({ disposition: 'started' }); run(command.message); }
         break;

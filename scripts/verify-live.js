@@ -38,13 +38,13 @@ const done = id => waitUntil(id, r => terminal.has(r.agent.status)).then(r => {
 });
 try {
   await client.connect(transport);
-  assert.equal((await client.listTools()).tools.length, 11);
-  record('MCP handshake', '11 tools discovered over real stdio');
+  assert.equal((await client.listTools()).tools.length, 18);
+  record('MCP handshake', '18 tools discovered over real stdio');
   for (const provider of ['zhipu', 'deepseek', 'minimax-tokenplan', 'opencode-go']) {
     const models = await call('list_models', { provider });
     assert.ok(models.models.length); record('Model discovery', `${provider}: ${models.models.length}`);
   }
-  const a = await call('spawn_agent', { cwd, provider: 'zhipu', model: 'glm-5.3', thinking: 'low', name: 'GLM-page-package', ownedPaths: ['packages/a'], workspaceMode: 'shared',
+  const a = await call('spawn_agent', { cwd, provider: 'zhipu', model: 'glm-5.3', thinking: 'low', name: 'GLM-page-package', policy: { allowedModels: [{ provider: 'zhipu', model: 'glm-5.3' }, { provider: 'minimax-tokenplan', model: 'MiniMax-M3.1-Flash-Preview' }] }, ownedPaths: ['packages/a'], workspaceMode: 'shared',
     prompt: '这是隔离的开发演示。先调用 ask_parent 工具询问默认 page_size 应为多少，明确答复前不要猜。收到答复后创建 packages/a/index.mjs，导出 pageSize() 返回答复的整数；用 node 实际检查该函数返回值，最后报告结果。只改 packages/a。' });
   results.agents.push(a.id);
   const b = await call('spawn_agent', { cwd, provider: 'deepseek', model: 'deepseek-flash', thinking: 'low', name: 'DeepSeek-total-package', ownedPaths: ['packages/b'], workspaceMode: 'shared',
@@ -89,6 +89,8 @@ try {
   results.finishedAt = new Date().toISOString();
   fs.writeFileSync(path.join(runDir, 'result.json'), JSON.stringify(results, null, 2) + '\n', { mode: 0o600 });
   if (results.completed) fs.cpSync(path.join(cwd, 'packages'), path.join(runDir, 'packages'), { recursive: true });
-  await client.close(); fs.rmSync(cwd, { recursive: true, force: true });
+  await client.close();
+  const info = path.join(runDir, 'state/controller.json'); if (fs.existsSync(info)) { process.kill(JSON.parse(fs.readFileSync(info, 'utf8')).pid, 'SIGTERM'); for (let i = 0; i < 50 && fs.existsSync(path.join(runDir, 'state/controller.lock')); i++) await new Promise(resolve => setTimeout(resolve, 50)); }
+  fs.rmSync(cwd, { recursive: true, force: true });
   console.log('Evidence: ' + runDir);
 }

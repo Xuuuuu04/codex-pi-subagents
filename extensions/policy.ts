@@ -1,0 +1,40 @@
+import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { createBashToolDefinition, createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import { fileOperation, runSandboxed } from '../src/tool-sandbox.js';
+
+/** Explicit tools only: filesystem and shell operations execute in OS-restricted subprocesses. */
+export default function (pi: ExtensionAPI) {
+  const policy = JSON.parse(fs.readFileSync(process.env.PI_SUBAGENT_POLICY!, 'utf8'));
+  const readFile = (file: string) => fileOperation(policy, 'read', file);
+  const writeFile = async (file: string, value: string) => { await fileOperation(policy, 'write', file, value); };
+  const access = async (file: string) => { await fileOperation(policy, 'access', file); };
+  pi.registerTool(createReadToolDefinition(policy.cwd, { operations: { readFile, access } }));
+  pi.registerTool(createWriteToolDefinition(policy.cwd, { operations: { writeFile, mkdir: async () => {} } }));
+  pi.registerTool(createEditToolDefinition(policy.cwd, { operations: { readFile, writeFile, access } }));
+  pi.registerTool(createBashToolDefinition(policy.cwd, { exposeSessionEnvironment: false, operations: {
+    exec: (command, cwd, options) => runSandboxed({ ...policy, cwd }, '/bin/bash', ['--noprofile', '--norc', '-c', command], { ...options, timeout: Math.min((options.timeout || 60) * 1000, 300000) }),
+  } }));
+  const tools = ['read', 'write', 'edit', 'bash', 'agent_message', 'ask_parent'];
+  pi.on('session_start', async () => {
+    pi.setActiveTools(tools);
+    const response = await fetch(process.env.PI_SUBAGENT_ENDPOINT!, { method: 'POST', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.PI_SUBAGENT_TOKEN}` }, body: JSON.stringify({ action: 'policy_ready', agentId: process.env.PI_SUBAGENT_ID }) });
+    if (!response.ok) process.exit(77);
+  });
+  pi.on('tool_call', event => tools.includes(event.toolName) ? undefined : { block: true, reason: 'Tool is outside this agent policy', terminate: true });
+  pi.on('before_provider_request', async (event, context) => {
+    try {
+      const response = await fetch(process.env.PI_SUBAGENT_ENDPOINT!, { method: 'POST', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.PI_SUBAGENT_TOKEN}` },
+        body: JSON.stringify({ action: 'reserve_request', agentId: process.env.PI_SUBAGENT_ID, messageId: randomUUID() }) });
+      if (!response.ok) process.exit(77);
+      const result = await response.json();
+      const payload = event.payload as Record<string, unknown>;
+      const api = context.model?.api;
+      if (api === 'openai-responses' || api === 'openai-codex-responses') payload.max_output_tokens = Math.min(Number(payload.max_output_tokens) || result.maxOutputTokens, result.maxOutputTokens);
+      else if (api === 'anthropic-messages') payload.max_tokens = Math.min(Number(payload.max_tokens) || result.maxOutputTokens, result.maxOutputTokens);
+      else if (api === 'openai-completions' && payload.max_tokens === undefined && payload.max_completion_tokens === undefined) payload.max_tokens = result.maxOutputTokens;
+      for (const key of ['max_tokens', 'max_completion_tokens', 'max_output_tokens']) if (typeof payload[key] === 'number') payload[key] = Math.min(payload[key] as number, result.maxOutputTokens);
+      return payload;
+    } catch { process.exit(77); } // Pi catches hook exceptions; exiting is required to block an unapproved provider request.
+  });
+}

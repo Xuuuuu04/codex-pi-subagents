@@ -5,20 +5,26 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { Manager } from './manager.js';
+import { connectController } from './controller-client.js';
+import { FileTaskStore, RemoteTaskStore } from './task-store.js';
+import { installCommunication } from './mcp-communication.js';
+import { installTaskTool } from './mcp-tasks.js';
 import { getProviderQuota, quotaProviders } from './quota-providers.js';
 import { dashboardInfo, ensureDashboard } from './dashboard-launcher.js';
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
-export const instructions = `Pi external subagents supplement Codex's own capabilities, enabling large-scale parallel work with configured domestic Chinese models. Use this capability only when the human user has explicitly authorized external model delegation in the conversation. A generic coding request or available quota is not authorization. Respect the authorized task, providers/models, concurrency and spending limits; continue within existing authorization without repeatedly asking. Ask the user before expanding beyond it, including additional paid usage. Read-only inspection does not require delegation authorization. Use list_models then spawn_agent with an explicit provider/model, absolute cwd, ownedPaths and concrete acceptance criteria. Spawn returns immediately; accepted does not mean completed. While children run, use wait_agent with each returned nextSequence as after[agentId], read_agent for details and reply_question for blocking questions. Send messages via send_message; steer is delivered at a Pi turn boundary. Waits return events, including progress; inspect status and keep waiting until completed, failed, interrupted or closed. Change models only when idle, or interrupt first; next_run restores the previous model after a settled run. Claims of success need actual changes/checks, not model prose. MCP cannot automatically inject native Codex subagent messages or wake an ended parent turn. Keep coordinating until the assigned tasks finish. Git worktrees preserve only the explicit committed baseRef; review/merge changes separately. Shared ownership is coordination, not filesystem security. Credentials remain in Pi; get_quota reads Pi credentials only to perform account-scoped read-only quota queries. Quota is not spending authorization. Do not send provider secrets in tools. Never auto-deploy or send external messages. Use resume_agent for saved sessions after reconnecting; do not rerun completed work blindly.`;
+export const instructions = `Pi external subagents supplement Codex's own capabilities, enabling large-scale parallel work with configured domestic Chinese models. Use this capability only when the human user has explicitly authorized external model delegation in the conversation. A generic coding request or available quota is not authorization. Respect the authorized task, providers/models, concurrency and spending limits; continue within existing authorization without repeatedly asking. Ask the user before expanding beyond it, including additional paid usage. Read-only inspection does not require delegation authorization. Use get_client_capabilities to inspect notifications/task support. Use list_models then spawn_agent with an explicit provider/model, absolute cwd, ownedPaths and concrete acceptance criteria. Spawn returns immediately; accepted does not mean completed. While children run, use wait_agent with each returned nextSequence as after[agentId], read_agent for details and reply_question for blocking questions. Send messages via send_message; steer is delivered at a Pi turn boundary. Waits return events, including progress; inspect status and keep waiting until completed, failed, interrupted or closed. Change models only when idle, or interrupt first; next_run restores the previous model after a settled run. Claims of success need actual changes/checks, not model prose. Standard resource, logging and task notifications are available, but host UI support does not guarantee model-turn wake after a parent turn ended. Keep coordinating until the assigned tasks finish. Git worktrees preserve only the explicit committed baseRef; review/merge changes separately. New agents use OS-restricted tool processes. Declare ownedPaths and policy allowedModels/request/time/token limits. Tokens are observed, so an in-flight request can exceed the threshold; these limits do not guarantee an exact currency charge. Supply stable requestId/messageId on retries; uncertain delivery must be inspected, not replayed. Credentials remain in Pi; get_quota reads Pi credentials only to perform account-scoped read-only quota queries. Quota is not spending authorization. Do not send provider secrets in tools. Never auto-deploy or send external messages. The independent controller keeps agents/questions alive after MCP disconnects. Use resume_agent or resume_task to attach to their saved identities after reconnecting; do not rerun completed work blindly.`;
 
 export async function createServer(options = {}) {
-  const manager = await new Manager({
+  const managerOptions = {
     root: options.root || process.env.PI_SUBAGENTS_STATE_DIR || path.join(projectRoot, '.agents/runtime'),
     executable: options.executable || process.env.PI_EXECUTABLE || 'pi',
     maxAgents: options.maxAgents || Number(process.env.PI_SUBAGENTS_MAX_AGENTS || 8),
     ...(options.processFactory ? { processFactory: options.processFactory } : {}),
-  }).start();
-  const server = new McpServer({ name: 'pi-subagents', version: '1.0.0' }, { instructions });
+  };
+  const manager = options.processFactory || options.embedded ? await new Manager(managerOptions).start() : await connectController(managerOptions);
+  const taskStore = manager.call ? new RemoteTaskStore(manager) : new FileTaskStore(manager.storage.root, manager);
+  const server = new McpServer({ name: 'pi-subagents', version: '1.1.0' }, { instructions, taskStore, capabilities: { logging: {}, tasks: { list: {}, cancel: {}, requests: { tools: { call: {} } } } } });
   function register(name, description, shape, handler, readOnly = false) {
     server.registerTool(name, { description, inputSchema: shape, annotations: { readOnlyHint: readOnly, destructiveHint: false, openWorldHint: !readOnly } }, async (values, extra) => {
       try {
@@ -32,6 +38,7 @@ export async function createServer(options = {}) {
   }, (values, extra) => getProviderQuota({ ...values, agentDir: options.piAgentDir, signal: extra.signal }), true);
   const id = z.string().uuid();
   const text = z.string().min(1).max(24000);
+  const policy = z.object({ allowedModels: z.array(z.object({ provider: z.string().min(1), model: z.string().min(1) })).min(1).max(50).optional(), maxModelRequests: z.number().int().min(1).max(10000).optional(), maxTotalTokens: z.number().int().min(1).max(100000000).optional(), maxRuntimeMs: z.number().int().min(1000).max(604800000).optional(), maxOutputTokens: z.number().int().min(1).max(100000).optional(), allowNetwork: z.boolean().optional() });
   const thinking = z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
   register('list_models', 'List authenticated Pi model choices and catalog metadata. Explicitly choose provider/model for each agent; prices are catalog values, not measured charges.', {
     provider: z.string().optional(), search: z.string().optional(), limit: z.number().int().min(1).max(200).default(60),
@@ -39,22 +46,22 @@ export async function createServer(options = {}) {
     const models = (await manager.models(provider)).filter(m => !search || `${m.provider}/${m.model} ${m.name}`.toLowerCase().includes(search.toLowerCase()));
     return { models: models.slice(0, limit), total: models.length, truncated: models.length > limit };
   }, true);
-  register('spawn_agent', 'Supplement Codex with a domestic/multi-model Pi coding subagent. Requires explicit human authorization for external model delegation within this task and budget; ask if absent. Return its ID immediately. Declare owned files and acceptance in prompt. auto uses an independent Git worktree; shared requires non-overlapping paths.', {
-    cwd: z.string().min(1), prompt: text, provider: z.string().min(1), model: z.string().min(1), name: z.string().max(100).optional(),
+  const spawnShape = {
+    requestId: id.optional(), policy: policy.optional(), cwd: z.string().min(1), prompt: text, provider: z.string().min(1), model: z.string().min(1), name: z.string().max(100).optional(),
     ownedPaths: z.array(z.string().min(1)).min(1).max(100), context: z.string().max(40000).default(''),
     workspaceMode: z.enum(['auto', 'worktree', 'shared']).default('auto'), baseRef: z.string().optional(), thinking: thinking.default('high'),
-  }, values => manager.spawn(values));
+  };
+  register('spawn_agent', 'Start an independent Pi agent within explicit user delegation and spending authorization. Supply a stable requestId for safe retries; declare owned files and acceptance criteria. OS tool permissions and policy limits are enforced. Returns immediately; accepted is not completed.', spawnShape, values => manager.spawn(values));
+  installTaskTool(server, manager, spawnShape, taskStore);
   register('list_agents', 'Inspect current children, or include saved sessions for explicit recovery. Returns the private local dashboard URL when running.', {
     includeSaved: z.boolean().default(false),
-  }, ({ includeSaved }) => ({ agents: manager.list(includeSaved), dashboardUrl: dashboardInfo(manager.storage.root)?.url }), true);
+  }, async ({ includeSaved }) => ({ agents: await manager.list(includeSaved), dashboardUrl: dashboardInfo(manager.storage.root)?.url }), true);
   register('read_agent', 'Read durable agent status and recent events after a sequence. Optionally retrieve a bounded transcript from the active Pi process.', {
     agentId: id, afterSequence: z.number().int().min(0).default(0), limit: z.number().int().min(1).max(100).default(50), transcript: z.boolean().default(false),
   }, async ({ agentId, afterSequence, limit, transcript }) => {
-    const result = manager.read(agentId, afterSequence, limit);
+    const result = await manager.read(agentId, afterSequence, limit);
     if (transcript) {
-      const agent = manager.get(agentId);
-      if (!agent.rpc || agent.rpc.exited) throw new Error('Resume the saved session before reading its transcript');
-      const data = await agent.rpc.command('get_messages');
+      const data = manager.transcript ? await manager.transcript(agentId) : await manager.get(agentId).rpc.command('get_messages');
       let remaining = 40000;
       result.messages = data.messages.slice(-Math.min(limit, 20)).map(message => {
         const original = JSON.stringify(message.content);
@@ -64,26 +71,43 @@ export async function createServer(options = {}) {
     }
     return result;
   }, true);
-  register('send_message', 'Send a new task or communicate within the user-authorized delegation scope. Ask before expanding work or paid usage beyond it. steer delivers after current tools finish; follow_up waits until work finishes. Answer blocking questions with reply_question.', {
-    agentId: id, message: text, mode: z.enum(['steer', 'follow_up']).default('steer'),
-  }, ({ agentId, message, mode }) => manager.send(agentId, message, mode));
+  register('send_message', 'Send a new task or communicate within the user-authorized delegation scope. Ask before expanding work or paid usage beyond it. Use a stable messageId when retrying; inspect uncertain receipts before dispatching again. steer delivers after current tools finish; follow_up waits until work finishes. Answer blocking questions with reply_question.', {
+    agentId: id, message: text, mode: z.enum(['steer', 'follow_up']).default('steer'), messageId: id.optional(),
+  }, ({ agentId, message, mode, messageId }) => manager.send(agentId, message, mode, messageId));
   register('reply_question', 'Answer an actual pending child question. Only an explicit answer releases the waiting tool.', {
     questionId: id, message: text,
-  }, ({ questionId, message }) => manager.channel.reply(questionId, message));
+  }, ({ questionId, message }) => (manager.reply ? manager.reply(questionId, message) : manager.channel.reply(questionId, message)));
   register('wait_agent', 'Wait until a selected child emits a new event, or a bounded timeout. Reuse nextSequence in after to avoid repeated events. Progress also wakes this call; completed means Pi settled, not business acceptance.', {
     agentIds: z.array(id).min(1).max(8), after: z.record(z.number().int().min(0)).default({}), timeoutMs: z.number().int().min(0).max(45000).default(25000),
-  }, ({ agentIds, after, timeoutMs }, extra) => manager.wait(agentIds, after, timeoutMs, extra.signal), true);
+  }, async ({ agentIds, after, timeoutMs }, extra) => {
+    let progress = 0;
+    const onEvent = event => { if (agentIds.includes(event.agentId) && extra._meta?.progressToken !== undefined) extra.sendNotification({ method: 'notifications/progress', params: { progressToken: extra._meta.progressToken, progress: ++progress, message: event.type } }).catch(error => process.stderr.write(error.message + '\n')); };
+    manager.on('event', onEvent);
+    try { return await manager.wait(agentIds, after, timeoutMs, extra.signal); }
+    finally { manager.off('event', onEvent); }
+  }, true);
   register('set_agent_model', 'Change an idle session model within the user-authorized model and spending scope; ask before exceeding it. Global Pi defaults stay unchanged. next_run restores the prior model and thinking after one settled run. Interrupt busy work explicitly first.', {
     agentId: id, provider: z.string().min(1), model: z.string().min(1), thinking: thinking.optional(), scope: z.enum(['session', 'next_run']).default('session'),
   }, ({ agentId, ...options }) => manager.setModel(agentId, options));
   register('interrupt_agent', 'Clear queued instructions and abort current Pi work. Edits already made remain; stopping is not rollback.', { agentId: id }, ({ agentId }) => manager.interrupt(agentId));
   register('close_agent', 'Stop and close this child while preserving its Pi session and worktree. Does not merge or delete source changes.', { agentId: id }, ({ agentId }) => manager.closeAgent(agentId));
   register('resume_agent', 'Reopen a saved child within explicit human delegation authorization, retaining its model and directory. Fails if another live controller owns it. Does not automatically repeat previous work.', { agentId: id }, ({ agentId }) => manager.resume(agentId));
-  return { server, manager };
+  register('read_messages', 'Read durable message receipts, reports and questions. accepted is transport acceptance; consumed means included in model context; acknowledged means parent explicitly confirmed reading. Reuse cursors.', { agentId: id, afterMessageId: id.optional(), limit: z.number().int().min(1).max(100).default(50), unacknowledgedOnly: z.boolean().default(false) }, values => manager.call ? manager.call('readMessages', values) : manager.messages.read(values.agentId, values), true);
+  register('ack_messages', 'Confirm the parent has read specific messages; does not mean the task passed acceptance checks.', { agentId: id, messageIds: z.array(id).min(1).max(100) }, values => manager.call ? manager.call('ackMessages', values) : manager.messages.acknowledge(values.agentId, values.messageIds));
+  register('update_agent_policy', 'Change limits or allowed models for an idle agent only after explicit human authorization. authorizationReference records the actual user instruction; it is a host assertion, not server proof of identity. If supported, the client additionally displays a confirmation form. Restart retains the Pi session and does not replay tasks.', { agentId: id, policy, authorizationReference: z.string().min(1).max(2000) }, async values => {
+    if (server.server.getClientCapabilities()?.elicitation?.form) {
+      const confirmation = await server.server.elicitInput({ mode: 'form', message: `Allow changing Pi agent ${values.agentId}? Requested limits: ${JSON.stringify(values.policy)}. Authorization cited by host: ${values.authorizationReference}`, requestedSchema: { type: 'object', properties: { approved: { type: 'boolean', title: 'Allow the requested policy change' } }, required: ['approved'] } });
+      if (confirmation.action !== 'accept' || confirmation.content?.approved !== true) throw new Error('User did not approve the policy change');
+    }
+    return manager.call ? manager.call('updatePolicy', values) : manager.updatePolicy(values.agentId, values.policy, values.authorizationReference);
+  });
+  register('resume_task', 'Explicitly take over a persisted MCP task after its previous parent disconnected. Does not replay completed work or allow taking control from an attached parent.', { taskId: id }, values => manager.call ? manager.call('adoptTask', values) : Promise.reject(new Error('Task adoption requires the independent controller')));
+  installCommunication(server, manager, register);
+  return { server, manager, taskStore };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  // Custom verification roots do not create a persistent service. Default production connections reuse one viewer.
+  // Default production connections also reuse a separate read-only viewer. Verification roots omit the viewer.
   if (!process.env.PI_SUBAGENTS_STATE_DIR && process.env.PI_DASHBOARD_AUTO !== '0') {
     try { await ensureDashboard(); }
     catch (error) { process.stderr.write(`Pi dashboard: ${error.message}\n`); }

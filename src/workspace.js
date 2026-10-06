@@ -21,7 +21,7 @@ export function createWorkspace({ cwd, id, mode = 'auto', baseRef, directory }) 
   let repository;
   try { repository = git(original, ['rev-parse', '--show-toplevel']); }
   catch (error) { if (mode === 'worktree') throw new Error('worktree requires a Git repository', { cause: error }); }
-  if (mode === 'shared' || !repository) return { cwd: original, sourceCwd: original, mode: 'shared', note: 'Declared ownership is coordination, not an OS sandbox.' };
+  if (mode === 'shared' || !repository) return { cwd: original, sourceCwd: original, mode: 'shared', note: 'Shared directory; file and shell permissions are enforced separately by the agent tool policy.' };
   const base = git(repository, ['rev-parse', '--verify', `${baseRef || 'HEAD'}^{commit}`]);
   const dirty = !!git(repository, ['status', '--porcelain']);
   if (dirty && !baseRef) throw new Error('Git checkout has local changes. Supply an explicit committed baseRef, or explicitly choose shared mode.');
