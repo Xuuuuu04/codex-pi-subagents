@@ -12,14 +12,16 @@ import { sandboxProfile, canonicalPath } from './tool-sandbox.js';
 import { createWorkspace, validateOwnedPaths, pathsOverlap } from './workspace.js';
 
 const extension = fileURLToPath(new URL('../extensions/communication.ts', import.meta.url));
+export const maxAgentLimit = 50;
+export const defaultMaxAgents = 50;
 const activeStatuses = new Set(['starting', 'running', 'waiting', 'finishing']);
 const textOf = message => (message?.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n');
 
 /** Own Pi processes, durable sessions, model changes and events for an independent controller. */
 export class Manager extends EventEmitter {
-  constructor({ root, executable = 'pi', maxAgents = 8, processFactory = options => new PiProcess(options) }) {
+  constructor({ root, executable = 'pi', maxAgents = defaultMaxAgents, processFactory = options => new PiProcess(options) }) {
     super();
-    if (!Number.isInteger(maxAgents) || maxAgents < 1 || maxAgents > 32) throw new Error('maxAgents must be an integer from 1 to 32');
+    if (!Number.isInteger(maxAgents) || maxAgents < 1 || maxAgents > maxAgentLimit) throw new Error(`maxAgents must be an integer from 1 to ${maxAgentLimit}`);
     this.storage = new Storage(root);
     this.executable = executable;
     this.maxAgents = maxAgents;

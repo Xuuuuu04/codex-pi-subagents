@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { z } from 'zod';
+import { maxAgentLimit } from './manager.js';
 
 export const callbackEvents = ['settled', 'question', 'process_failed', 'budget_limit', 'control_failed', 'message'];
 const defaultEvents = ['settled', 'question', 'process_failed', 'budget_limit', 'control_failed'];
@@ -97,7 +98,7 @@ export function installCallbacks(server, manager, register) {
   const callbacks = new Callbacks({ root: manager.storage.root, server: server.server });
   manager.on('event', event => { callbacks.handle(event); });
   register('set_agent_callback', 'Configure parent wake-up callbacks for owned agents. Claude Code receives channel notifications (requires the session to enable this server as a channel); Codex receives `codex queue` messages when codexThreadId is set (read it with `echo $CODEX_THREAD_ID` in your shell). Default events: settled, question, process_failed, budget_limit, control_failed. A callback is a hint to resume coordinating, not acceptance of work.', {
-    agentIds: z.array(z.string().uuid()).min(1).max(32), ...callbackShape.shape,
+    agentIds: z.array(z.string().uuid()).min(1).max(maxAgentLimit), ...callbackShape.shape,
   }, async ({ agentIds, ...options }) => {
     const result = [];
     for (const agentId of agentIds) {

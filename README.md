@@ -86,7 +86,7 @@ npm run install:all      # 或 install:codex / install:claude
 - Git 项目默认创建独立 worktree 和 `pi-agent/<身份>` 分支。源目录有未提交改动时，必须明确选择一个已提交的 `baseRef`，或者明确使用 `shared`。未提交内容不会自动复制。
 - 非 Git 目录使用共享目录。每个代理必须声明 `ownedPaths`，活跃代理的文件范围不能重叠。新会话的工具写入受操作系统限制，只允许声明范围；符号链接也要通过检查。
 - 不自动合并代码、删除工作目录、发布或对外发送。Codex 检查后自行按用户授权处理 Git 合并。
-- 默认最多同时打开 8 个 Pi 会话。可用 `PI_SUBAGENTS_MAX_AGENTS` 设置 1–32；打开但空闲的会话也计入，避免无限积累进程。
+- 默认最多同时打开 50 个 Pi 会话。可用 `PI_SUBAGENTS_MAX_AGENTS` 设置 1–50；`wait_agent` 一次最多等待 50 个；打开但空闲的会话也计入，避免无限积累进程。
 - 会话、状态、事件和工作目录默认保存在本项目 `.agents/runtime/`，不进入 Git。可用 `PI_SUBAGENTS_STATE_DIR` 指定其他本机目录。
 - MCP 连接关闭时仅断开主会话，独立管理进程继续运行 Pi 并保留等待的问题。新连接用 `list_agents(includeSaved=true)` 和 `resume_agent` 恢复；另一个仍连接的主会话持有的代理不能同时接手。重启电脑或管理进程实际退出后，显式恢复保存的 Pi 会话，旧任务不重发。
 - 模型切换只改变该会话，不改变 Pi 全局默认模型。历史通过 Pi 转成目标模型可接收的内容；不保证转移各服务的私有思考状态。

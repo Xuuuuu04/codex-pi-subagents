@@ -3,7 +3,7 @@ import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
 import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
-import { Manager } from './manager.js';
+import { Manager, defaultMaxAgents } from './manager.js';
 import { processAlive } from './storage.js';
 import { FileTaskStore } from './task-store.js';
 
@@ -18,7 +18,7 @@ if (fs.existsSync(lock)) {
 }
 try { fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }), { flag: 'wx', mode: 0o600 }); }
 catch (error) { if (error.code === 'EEXIST') process.exit(0); throw error; }
-const manager = await new Manager({ root, executable: process.env.PI_EXECUTABLE || 'pi', maxAgents: Number(process.env.PI_SUBAGENTS_MAX_AGENTS || 8) }).start();
+const manager = await new Manager({ root, executable: process.env.PI_EXECUTABLE || 'pi', maxAgents: Number(process.env.PI_SUBAGENTS_MAX_AGENTS || defaultMaxAgents) }).start();
 const parents = new Map();
 const tasks = new FileTaskStore(root, manager);
 const cleanup = setInterval(() => { try { tasks.prune(); } catch (error) { process.stderr.write(`Task cleanup failed: ${error.message}\n`); } }, 60000); cleanup.unref();

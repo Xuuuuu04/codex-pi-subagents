@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { Manager } from './manager.js';
+import { Manager, defaultMaxAgents, maxAgentLimit } from './manager.js';
 import { connectController } from './controller-client.js';
 import { FileTaskStore, RemoteTaskStore } from './task-store.js';
 import { installCommunication } from './mcp-communication.js';
@@ -22,7 +22,7 @@ export async function createServer(options = {}) {
   const managerOptions = {
     root: options.root || process.env.PI_SUBAGENTS_STATE_DIR || path.join(projectRoot, '.agents/runtime'),
     executable: options.executable || process.env.PI_EXECUTABLE || 'pi',
-    maxAgents: options.maxAgents || Number(process.env.PI_SUBAGENTS_MAX_AGENTS || 8),
+    maxAgents: options.maxAgents || Number(process.env.PI_SUBAGENTS_MAX_AGENTS || defaultMaxAgents),
     ...(options.processFactory ? { processFactory: options.processFactory } : {}),
   };
   const manager = options.processFactory || options.embedded ? await new Manager(managerOptions).start() : await connectController(managerOptions);
@@ -85,7 +85,7 @@ export async function createServer(options = {}) {
     questionId: id, message: text,
   }, ({ questionId, message }) => (manager.reply ? manager.reply(questionId, message) : manager.channel.reply(questionId, message)));
   register('wait_agent', 'Wait until a selected child emits a new event, or a bounded timeout. Reuse nextSequence in after to avoid repeated events. Progress also wakes this call; completed means Pi settled, not business acceptance.', {
-    agentIds: z.array(id).min(1).max(8), after: z.record(z.number().int().min(0)).default({}), timeoutMs: z.number().int().min(0).max(45000).default(25000),
+    agentIds: z.array(id).min(1).max(maxAgentLimit), after: z.record(z.number().int().min(0)).default({}), timeoutMs: z.number().int().min(0).max(45000).default(25000),
   }, async ({ agentIds, after, timeoutMs }, extra) => {
     let progress = 0;
     const onEvent = event => { if (agentIds.includes(event.agentId) && extra._meta?.progressToken !== undefined) extra.sendNotification({ method: 'notifications/progress', params: { progressToken: extra._meta.progressToken, progress: ++progress, message: event.type } }).catch(error => process.stderr.write(error.message + '\n')); };

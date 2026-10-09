@@ -5,6 +5,7 @@ import { EventEmitter } from 'node:events';
 import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { defaultMaxAgents } from './manager.js';
 
 const script = fileURLToPath(new URL('./controller.js', import.meta.url));
 /** Private Unix-socket bridge. Closing an MCP bridge detaches its parent without stopping Pi. */
@@ -57,7 +58,7 @@ async function probe(root) {
   try { const info = JSON.parse(fs.readFileSync(file, 'utf8'));  await new ControllerClient(root, info).call('health'); return info; }
   catch { return null; }
 }
-export async function connectController({ root, executable = 'pi', maxAgents = 8 }) {
+export async function connectController({ root, executable = 'pi', maxAgents = defaultMaxAgents }) {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   let info = await probe(root);
   if (!info) {
