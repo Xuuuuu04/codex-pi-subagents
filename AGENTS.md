@@ -1,13 +1,14 @@
 # CodeX 子代理拓展
 
 ## 这个项目是什么
-为 Codex 提供 Pi 多模型子代理 MCP。每个会话独立保存，支持任务、双向消息、提问、等待、停止、恢复和临时模型切换。
+为 Codex 和 Claude Code 提供 Pi 多模型子代理 MCP。每个会话独立保存，支持任务、双向消息、提问、等待、停止、恢复、临时模型切换、回调唤醒和改动查看。
 
 ## 怎么运行
 - Node.js 22.19+，本机 Pi 1.0.2+、Codex 和有效模型配置。
 - `npm ci --ignore-scripts` 安装固定依赖；`npm start` 启动 stdio MCP。
 - `npm run check` 检查 JavaScript；`npm test` 检查行为，不调用真实模型。
-- `npm run install:codex` 接入本机 Codex；`npm run uninstall:codex` 移除接入。
+- `npm run install:all` 接入本机 Codex 和 Claude Code（也可 `install:codex` / `install:claude`）；只改配置，不停进程。
+- `npm run wait-events -- --agent <id>` 后台等待子代理事件，用于唤醒 Claude Code。
 - `npm run dashboard` 启动或复用本机只读会话面板；默认 MCP 启动时自动启动。
 - `npm run verify:communication` 验证断线恢复与实际权限/请求限制。
 - `npm run verify:live` 真实国模验证；`node scripts/verify-codex.js` 真实 Codex 接入验证。
@@ -24,6 +25,7 @@
 - `src/messages.js`：本机消息接收、问题等待与答复。
 - `src/storage.js`：私密状态和事件保存。
 - `src/workspace.js`：文件范围、独立 Git 工作目录。
+- `src/callbacks.js`：桥接进程内的回调（Claude channel、`codex queue`）；`src/agent-changes.js`：只读改动查看。
 - `src/dashboard*.js`、`dashboard/`：只读数据、私密本机服务、独立启动与页面。
 - `extensions/policy.ts`：实际文件/shell 限制、启动确认与请求前检查。
 - `extensions/communication.ts`：子代理可调用的报告和提问工具。
@@ -65,6 +67,7 @@ Codex 调用 MCP → 私密 Unix socket → 独立管理器创建或控制 Pi �
 - Pi stdout 按 LF 切 JSONL；Unicode 分隔符可以出现在合法字符串里。
 - `ask_parent` 等待期间要用 `reply_question`，普通消息只进入指令队列。
 - 新版管理进程配置沿用首次启动参数；已有代理不能自动获得新权限规则。
+- 回调与改动查看只在桥接进程实现，兼容已在运行的旧管理进程；管理进程侧的改动要等它自然重启后才生效，不能为升级强停。
 - 当前 Codex CLI 未声明 Tasks 能力，使用普通创建/读取/等待；不得假定通知会触发模型继续执行。
 - 新增 MCP 后当前已运行的 Codex 聊天可能尚未加载；重启客户端。
 - 安装使用绝对 Node/Pi 路径；移动项目或移除对应 Node 版本后重跑安装。

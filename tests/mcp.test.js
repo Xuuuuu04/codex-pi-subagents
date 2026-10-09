@@ -12,7 +12,7 @@ test('MCP client discovers tools, creates an agent and receives structured error
   const client = new Client({ name: 'test', version: '1' });
   t.after(async () => { await client.close(); await server.close(); });
   await server.connect(serverTransport); await client.connect(clientTransport);
-  const tools = await client.listTools(); assert.equal(tools.tools.length, 18);
+  const tools = await client.listTools(); assert.equal(tools.tools.length, 20);
   assert.equal(tools.tools.find(tool => tool.name === 'get_quota').annotations.readOnlyHint, true);
   const result = await client.callTool({ name: 'spawn_agent', arguments: { cwd, prompt: 'hello', provider: 'fake', model: 'cheap', ownedPaths: ['src'], workspaceMode: 'shared' } });
   assert.equal(result.isError, undefined); assert.ok(result.structuredContent.result.id);

@@ -1,6 +1,6 @@
 {
   "name": "codex-pi-subagents",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "description": "供 Codex 调用的 Pi 多模型子代理 MCP",
@@ -10,10 +10,14 @@
     "dashboard": "node scripts/dashboard.js",
     "test": "node --test tests/*.test.js",
     "check": "node scripts/check.js",
-    "install:codex": "node scripts/install.js",
-    "uninstall:codex": "node scripts/install.js --remove",
+    "install:all": "node scripts/install.js",
+    "install:codex": "node scripts/install.js --target=codex",
+    "install:claude": "node scripts/install.js --target=claude",
+    "uninstall:codex": "node scripts/install.js --target=codex --remove",
+    "uninstall:claude": "node scripts/install.js --target=claude --remove",
     "verify:communication": "node scripts/verify-communication.js",
-    "verify:live": "node scripts/verify-live.js"
+    "verify:live": "node scripts/verify-live.js",
+    "wait-events": "node scripts/wait-events.js"
   },
   "dependencies": { "@modelcontextprotocol/sdk": "1.26.0", "zod": "3.25.76" }
 }

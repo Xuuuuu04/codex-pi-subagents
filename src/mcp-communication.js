@@ -22,7 +22,11 @@ export function installCommunication(server, manager, register) {
   register('get_client_capabilities', 'Inspect negotiated MCP client capabilities and supported server features. Notifications do not imply that the host automatically wakes the Codex model after a turn has ended. Use wait/read fallback if the host does not consume asynchronous events.', {}, () => ({
     client: server.server.getClientVersion(), negotiated: server.server.getClientCapabilities(),
     server: { durableMessages: true, independentController: Boolean(manager.call), resourceSubscriptions: true, logNotifications: true, progressNotifications: true, tasks: 'experimental MCP 2025-11-25' },
-    automaticCodexTurnWake: { supported: false, reason: 'MCP does not expose a portable model-turn wake API; host notification display is not model execution.' },
+    callbacks: {
+      claudeChannel: 'notifications/claude/channel; wakes Claude Code only when the session enabled this server as a channel. Otherwise run scripts/wait-events.js as a background command.',
+      codexQueue: 'codex queue --thread <CODEX_THREAD_ID>; set callback.codexThreadId on spawn_agent or set_agent_callback.',
+    },
+    automaticTurnWake: { portable: false, reason: 'MCP has no portable model-turn wake API; callbacks use host-specific channels and still need actual inspection.' },
   }), true);
   if (manager.watch) { server.server.oninitialized = () => { manager.watch().catch(error => process.stderr.write(`Pi watcher: ${error.message}\n`)); }; }
 }

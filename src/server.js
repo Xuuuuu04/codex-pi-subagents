@@ -9,11 +9,14 @@ import { connectController } from './controller-client.js';
 import { FileTaskStore, RemoteTaskStore } from './task-store.js';
 import { installCommunication } from './mcp-communication.js';
 import { installTaskTool } from './mcp-tasks.js';
+import { installCallbacks, callbackShape } from './callbacks.js';
+import { agentChanges } from './agent-changes.js';
+import { Storage } from './storage.js';
 import { getProviderQuota, quotaProviders } from './quota-providers.js';
 import { dashboardInfo, ensureDashboard } from './dashboard-launcher.js';
 
 const projectRoot = fileURLToPath(new URL('..', import.meta.url));
-export const instructions = `Pi external subagents supplement Codex's own capabilities, enabling large-scale parallel work with configured domestic Chinese models. Use this capability only when the human user has explicitly authorized external model delegation in the conversation. A generic coding request or available quota is not authorization. Respect the authorized task, providers/models, concurrency and spending limits; continue within existing authorization without repeatedly asking. Ask the user before expanding beyond it, including additional paid usage. Read-only inspection does not require delegation authorization. Use get_client_capabilities to inspect notifications/task support. Use list_models then spawn_agent with an explicit provider/model, absolute cwd, ownedPaths and concrete acceptance criteria. Spawn returns immediately; accepted does not mean completed. While children run, use wait_agent with each returned nextSequence as after[agentId], read_agent for details and reply_question for blocking questions. Send messages via send_message; steer is delivered at a Pi turn boundary. Waits return events, including progress; inspect status and keep waiting until completed, failed, interrupted or closed. Change models only when idle, or interrupt first; next_run restores the previous model after a settled run. Claims of success need actual changes/checks, not model prose. Standard resource, logging and task notifications are available, but host UI support does not guarantee model-turn wake after a parent turn ended. Keep coordinating until the assigned tasks finish. Git worktrees preserve only the explicit committed baseRef; review/merge changes separately. New agents use OS-restricted tool processes. Declare ownedPaths and policy allowedModels/request/time/token limits. Tokens are observed, so an in-flight request can exceed the threshold; these limits do not guarantee an exact currency charge. Supply stable requestId/messageId on retries; uncertain delivery must be inspected, not replayed. Credentials remain in Pi; get_quota reads Pi credentials only to perform account-scoped read-only quota queries. Quota is not spending authorization. Do not send provider secrets in tools. Never auto-deploy or send external messages. The independent controller keeps agents/questions alive after MCP disconnects. Use resume_agent or resume_task to attach to their saved identities after reconnecting; do not rerun completed work blindly.`;
+export const instructions = `Pi external subagents supplement Codex's own capabilities, enabling large-scale parallel work with configured domestic Chinese models. Use this capability only when the human user has explicitly authorized external model delegation in the conversation. A generic coding request or available quota is not authorization. Respect the authorized task, providers/models, concurrency and spending limits; continue within existing authorization without repeatedly asking. Ask the user before expanding beyond it, including additional paid usage. Read-only inspection does not require delegation authorization. Use get_client_capabilities to inspect notifications/task support. Use list_models then spawn_agent with an explicit provider/model, absolute cwd, ownedPaths and concrete acceptance criteria. Spawn returns immediately; accepted does not mean completed. While children run, use wait_agent with each returned nextSequence as after[agentId], read_agent for details and reply_question for blocking questions. Send messages via send_message; steer is delivered at a Pi turn boundary. Waits return events, including progress; inspect status and keep waiting until completed, failed, interrupted or closed. Change models only when idle, or interrupt first; next_run restores the previous model after a settled run. Claims of success need actual changes/checks, not model prose. Standard resource, logging and task notifications are available, but host UI support does not guarantee model-turn wake after a parent turn ended. Keep coordinating until the assigned tasks finish. spawn_agent enables wake-up callbacks by default: Claude Code gets channel notifications when this server is enabled as a channel; Codex parents should pass callback.codexThreadId from the shell command "echo $CODEX_THREAD_ID" so settled/question events are queued into their thread. Callbacks are hints, never acceptance. Use get_agent_changes to review actual files. Git worktrees preserve only the explicit committed baseRef; review/merge changes separately. New agents use OS-restricted tool processes. Declare ownedPaths and policy allowedModels/request/time/token limits. Tokens are observed, so an in-flight request can exceed the threshold; these limits do not guarantee an exact currency charge. Supply stable requestId/messageId on retries; uncertain delivery must be inspected, not replayed. Credentials remain in Pi; get_quota reads Pi credentials only to perform account-scoped read-only quota queries. Quota is not spending authorization. Do not send provider secrets in tools. Never auto-deploy or send external messages. The independent controller keeps agents/questions alive after MCP disconnects. Use resume_agent or resume_task to attach to their saved identities after reconnecting; do not rerun completed work blindly.`;
 
 export async function createServer(options = {}) {
   const managerOptions = {
@@ -24,7 +27,7 @@ export async function createServer(options = {}) {
   };
   const manager = options.processFactory || options.embedded ? await new Manager(managerOptions).start() : await connectController(managerOptions);
   const taskStore = manager.call ? new RemoteTaskStore(manager) : new FileTaskStore(manager.storage.root, manager);
-  const server = new McpServer({ name: 'pi-subagents', version: '1.1.0' }, { instructions, taskStore, capabilities: { logging: {}, tasks: { list: {}, cancel: {}, requests: { tools: { call: {} } } } } });
+  const server = new McpServer({ name: 'pi-subagents', version: '1.2.0' }, { instructions, taskStore, capabilities: { logging: {}, tasks: { list: {}, cancel: {}, requests: { tools: { call: {} } } } } });
   function register(name, description, shape, handler, readOnly = false) {
     server.registerTool(name, { description, inputSchema: shape, annotations: { readOnlyHint: readOnly, destructiveHint: false, openWorldHint: !readOnly } }, async (values, extra) => {
       try {
@@ -51,7 +54,11 @@ export async function createServer(options = {}) {
     ownedPaths: z.array(z.string().min(1)).min(1).max(100), context: z.string().max(40000).default(''),
     workspaceMode: z.enum(['auto', 'worktree', 'shared']).default('auto'), baseRef: z.string().optional(), thinking: thinking.default('high'),
   };
-  register('spawn_agent', 'Start an independent Pi agent within explicit user delegation and spending authorization. Supply a stable requestId for safe retries; declare owned files and acceptance criteria. OS tool permissions and policy limits are enforced. Returns immediately; accepted is not completed.', spawnShape, values => manager.spawn(values));
+  let callbacks;
+  register('spawn_agent', 'Start an independent Pi agent within explicit user delegation and spending authorization. Supply a stable requestId for safe retries; declare owned files and acceptance criteria. OS tool permissions and policy limits are enforced. Returns immediately; accepted is not completed. callback (default enabled) wakes the parent on settle/question; Codex must supply callback.codexThreadId.', { ...spawnShape, callback: callbackShape.optional() }, async ({ callback, ...values }) => {
+    const agent = await manager.spawn(values);
+    return { ...agent, callback: callbacks.configure(agent.id, callback, agent.sequence) };
+  });
   installTaskTool(server, manager, spawnShape, taskStore);
   register('list_agents', 'Inspect current children, or include saved sessions for explicit recovery. Returns the private local dashboard URL when running.', {
     includeSaved: z.boolean().default(false),
@@ -102,7 +109,14 @@ export async function createServer(options = {}) {
     return manager.call ? manager.call('updatePolicy', values) : manager.updatePolicy(values.agentId, values.policy, values.authorizationReference);
   });
   register('resume_task', 'Explicitly take over a persisted MCP task after its previous parent disconnected. Does not replay completed work or allow taking control from an attached parent.', { taskId: id }, values => manager.call ? manager.call('adoptTask', values) : Promise.reject(new Error('Task adoption requires the independent controller')));
+  register('get_agent_changes', 'Read-only review of an owned agent\'s actual file changes: Git status, commits and bounded diff against its worktree base commit (or HEAD limited to owned paths in shared mode). Use before accepting or merging work.', {
+    agentId: id, includeDiff: z.boolean().default(true), maxBytes: z.number().int().min(1000).max(200000).default(20000),
+  }, async ({ agentId, ...options }) => {
+    await manager.read(agentId, 0, 1); // Ownership check; the saved record also has owned paths for older controllers.
+    return agentChanges(new Storage(manager.storage.root).load(agentId), options);
+  }, true);
   installCommunication(server, manager, register);
+  callbacks = installCallbacks(server, manager, register);
   return { server, manager, taskStore };
 }
 

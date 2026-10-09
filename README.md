@@ -1,6 +1,6 @@
 # CodeX 子代理拓展
 
-把本机 Pi 封装为 Codex 可调用的 MCP。Codex 负责拆分任务、选择模型和检查结果；Pi 会话执行开发包，使用自己已有的模型配置和凭据。
+把本机 Pi 封装为 Codex 和 Claude Code 可调用的 MCP。Codex 负责拆分任务、选择模型和检查结果；Pi 会话执行开发包，使用自己已有的模型配置和凭据。
 
 ## 安装
 
@@ -10,12 +10,14 @@
 npm ci --ignore-scripts
 npm run check
 npm test
-npm run install:codex
+npm run install:all      # 或 install:codex / install:claude
 ```
 
-安装器只配置名为 `pi-subagents` 的本地 MCP，启动命令使用绝对路径。原 Codex 配置先保存到 `.agents/records/config-backups/`，权限为 600。安装后重新启动 Codex，在 MCP 列表检查 `pi-subagents`。安装目录需要保留；搬迁后在新目录重跑安装命令。
+安装器只配置名为 `pi-subagents` 的本地 MCP（Codex 写 `~/.codex/config.toml`，Claude Code 写用户级 `~/.claude.json`），启动命令使用绝对路径。原配置先保存到 `.agents/records/config-backups/`，权限为 600。安装目录需要保留；搬迁后在新目录重跑安装命令。
 
-直接启动：`npm start`。卸载接入：`npm run uninstall:codex`；这不会删除源码、Pi 凭据、开发成果或保存的会话。恢复配置时优先移除本 MCP；完整配置备份只有在确认没有后续其他配置改动时才适合覆盖。
+升级只改客户端配置，不停止任何进程：已经打开的聊天继续使用旧桥接进程，独立管理进程和正在运行的 Pi 代理不受影响；新开的 Codex / Claude Code 会话加载新版本，并连接同一个管理进程接手自己的代理。
+
+直接启动：`npm start`。卸载接入：`npm run uninstall:codex` 或 `npm run uninstall:claude`；这不会删除源码、Pi 凭据、开发成果或保存的会话。恢复配置时优先移除本 MCP；完整配置备份只有在确认没有后续其他配置改动时才适合覆盖。
 
 ## 给 Codex 的使用示例
 
@@ -58,12 +60,26 @@ npm run install:codex
 | `get_client_capabilities` | 查看客户端实际声明的协议能力和限制 |
 | `run_agent_task` | 支持 Tasks 的客户端使用标准异步任务协议 |
 | `resume_task` | 前一个主会话断开后，显式接手同一个任务 |
+| `set_agent_callback` | 设置或关闭回调：子代理结束、提问、失败、触发用量限制时唤醒主会话 |
+| `get_agent_changes` | 只读查看子代理实际改动：Git 状态、提交和有限长度的 diff |
 
 `send_message` 的 `steer` 在当前模型回答和工具执行结束后的合适位置接收；`follow_up` 等当前工作完成再接收。`ask_parent` 正在等待时必须调用 `reply_question`；普通消息不会替代问题答复。
 
 每次 `wait_agent` 返回后，把各代理的 `nextSequence` 放入下一次的 `after[agentId]`，避免重复读取。工具执行进度也会使等待返回；继续检查 `status`，不要把一次工具返回当成开发包完成。
 
 子代理拥有 `agent_message(recipient, message)` 和 `ask_parent(question)`。`recipient` 可为 `parent`，或父代理提供的兄弟代理身份。兄弟消息成为对方的新指令；父代理消息进入可读取的事件记录。
+
+## 回调唤醒
+
+`spawn_agent` 默认开启回调，事件为 `settled`、`question`、`process_failed`、`budget_limit`、`control_failed`；可加 `message`（子代理给主会话的进度报告）。回调只提醒主会话回来协调，不代表验收通过。已经发生过的历史事件不会重新回调，同一事件只发一次。
+
+| 主会话 | 回调方式 |
+| --- | --- |
+| Codex | 先在 shell 运行 `echo $CODEX_THREAD_ID`，把结果作为 `callback.codexThreadId` 传给 `spawn_agent`（或之后用 `set_agent_callback`）。事件发生时桥接进程执行 `codex queue --thread <id> --message ...`，消息进入该聊天的队列。 |
+| Claude Code（channel） | 服务声明 `claude/channel` 能力并发送 `notifications/claude/channel`。只有以 channel 方式启用本服务的会话才会被唤醒，例如 `claude --dangerously-load-development-channels server:pi-subagents`。 |
+| Claude Code（通用） | 把 `npm run wait-events -- --agent <id>` 作为后台命令运行：事件到达时打印摘要并退出，Claude Code 随即被唤醒；配合 Monitor 可用 `--follow` 持续输出。只读保存文件，不需要 channel。 |
+
+回调由所属主会话的桥接进程发出：主会话关闭后不再回调，用 `resume_agent` 接手后重新 `set_agent_callback`。最近一次投递结果记录在 `.agents/runtime/callbacks/<agentId>.json`。
 
 ## 并行与会话
 
@@ -77,7 +93,7 @@ npm run install:codex
 
 ## 能力边界
 
-外部 Pi 代理以 MCP 工具显示，不会变成 Codex 原生子代理界面。父代理可以接收标准日志、资源订阅和进度通知，或使用等待和读取工具；父代理结束本轮回答后，没有保证自动唤醒的入口。也不会自动继承 Codex 全部隐藏上下文，必要资料需要通过 `context` 或任务说明交付。
+外部 Pi 代理以 MCP 工具显示，不会变成 Codex 原生子代理界面。父代理可以接收标准日志、资源订阅和进度通知，或使用等待和读取工具；结束本轮回答后的唤醒依赖上面的宿主专用回调，不是 MCP 通用能力。也不会自动继承 Codex 全部隐藏上下文，必要资料需要通过 `context` 或任务说明交付。
 
 模型目录说明本机已配置，不代表每个模型都实际调用成功。状态 `completed` 说明 Pi 不会继续自动运行，不代表业务验收通过。`usage.reportedCost` 为 Pi 根据模型目录价格报告的金额，部分自定义模型为零；不是服务商的实际扣费记录，不能用它推断真实费用。
 
