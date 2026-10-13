@@ -11,7 +11,20 @@ const script = fileURLToPath(new URL('./controller.js', import.meta.url));
 /** Private Unix-socket bridge. Closing an MCP bridge detaches its parent without stopping Pi. */
 export class ControllerClient extends EventEmitter {
   constructor(root, info, parentId = randomUUID()) { super(); this.storage = { root }; this.info = info; this.parentId = parentId; this.closed = false; }
-  call(method, values = {}, signal) {
+  /** A replaced controller leaves a stale socket; re-read controller.json, re-attach once and retry. */
+  async call(method, values = {}, signal) {
+    try { return await this.request(method, values, signal); }
+    catch (error) {
+      if (!['ENOENT', 'ECONNREFUSED'].includes(error.code) || this.closed) throw error;
+      const file = path.join(this.storage.root, 'controller.json');
+      const latest = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
+      if (!latest || latest.socket === this.info.socket) throw error;
+      this.info = latest;
+      await this.request('attach', { pid: process.pid });
+      return this.request(method, values, signal);
+    }
+  }
+  request(method, values = {}, signal) {
     return new Promise((resolve, reject) => {
       const request = http.request({ socketPath: this.info.socket, path: '/rpc', method: 'POST', headers: { authorization: `Bearer ${this.info.token}`, 'content-type': 'application/json' }, signal }, response => {
         let body = ''; response.setEncoding('utf8');
