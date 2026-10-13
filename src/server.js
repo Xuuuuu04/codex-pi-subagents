@@ -41,7 +41,7 @@ export async function createServer(options = {}) {
   }, (values, extra) => getProviderQuota({ ...values, agentDir: options.piAgentDir, signal: extra.signal }), true);
   const id = z.string().uuid();
   const text = z.string().min(1).max(24000);
-  const policy = z.object({ allowedModels: z.array(z.object({ provider: z.string().min(1), model: z.string().min(1) })).min(1).max(50).optional(), maxModelRequests: z.number().int().min(1).max(1000000).optional(), maxTotalTokens: z.number().int().min(1).max(1e12).optional(), maxRuntimeMs: z.number().int().min(1000).max(2147483647).optional(), maxOutputTokens: z.number().int().min(1).max(1000000).optional(), allowNetwork: z.boolean().optional() });
+  const policy = z.object({ allowedModels: z.array(z.object({ provider: z.string().min(1), model: z.string().min(1) })).min(1).max(50).optional(), maxModelRequests: z.number().int().min(1).max(1000000).optional(), maxTotalTokens: z.number().int().min(1).max(1e12).optional(), maxRuntimeMs: z.number().int().min(1000).max(2147483647).optional(), maxOutputTokens: z.number().int().min(1).max(1000000).optional(), allowNetwork: z.boolean().optional(), sandboxMode: z.enum(['strict', 'dev', 'bypass']).optional() });
   const thinking = z.enum(['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
   register('list_models', 'List authenticated Pi model choices and catalog metadata. Explicitly choose provider/model for each agent; prices are catalog values, not measured charges.', {
     provider: z.string().optional(), search: z.string().optional(), limit: z.number().int().min(1).max(200).default(60),

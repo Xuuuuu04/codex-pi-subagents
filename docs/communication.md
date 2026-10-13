@@ -20,11 +20,12 @@
 | 参数 | 默认值与含义 |
 | --- | --- |
 | `allowedModels` | 只允许创建时指定的 provider/model |
-| `maxModelRequests` | 40 次 Pi 请求前批准轮次，按会话累计 |
-| `maxTotalTokens` | 200,000 个已报告 token，含输入/输出/缓存，按会话累计 |
-| `maxRuntimeMs` | 每次工作 30 分钟，含等待答复 |
-| `maxOutputTokens` | 已支持请求格式的输出上限 8,192 |
-| `allowNetwork` | false，shell 默认不能联网；模型与通信由可信 Pi 主进程处理 |
+| `maxModelRequests` | 100,000 次 Pi 请求前批准轮次，按会话累计 |
+| `maxTotalTokens` | 1e12 个已报告 token（基本不限），含输入/输出/缓存，按会话累计；到 80% 时提醒代理先汇报 |
+| `maxRuntimeMs` | 每次工作 7 天，含等待答复 |
+| `maxOutputTokens` | 已支持请求格式的输出上限 128,000 |
+| `sandboxMode` | 未设置时读 `.agents/sandbox.json`，再默认 strict；可选 strict、dev、bypass |
+| `allowNetwork` | true，shell 默认可以联网，需要时可设为 false 关闭；模型与通信由可信 Pi 主进程处理 |
 
 请求次数在请求前批准并保存，下一次达到限制就停止 Pi；Pi 会忽略扩展抛出的请求前异常，因此扩展使用进程退出阻止实际发送。运行超时会中止工作并关闭进程。token 是已经返回的用量，一次正在执行的请求可能超出阈值；服务商内部重试、实际账单和套餐扣减无法仅靠这个计数严格限制。
 

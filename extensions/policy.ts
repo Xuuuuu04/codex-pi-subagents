@@ -16,7 +16,7 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(createEditToolDefinition(policy.cwd, { operations: { readFile, writeFile, access } }));
   // 开发模式要跑完整检查，单条命令最多 30 分钟；严格模式仍是 5 分钟。
   pi.registerTool(createBashToolDefinition(policy.cwd, { exposeSessionEnvironment: false, operations: {
-    exec: (command, cwd, options) => runSandboxed({ ...policy, cwd }, '/bin/bash', ['--noprofile', '--norc', '-c', command], { ...options, timeout: Math.min((options.timeout || 60) * 1000, sandboxMode(policy) === 'dev' ? 1800000 : 300000) }),
+    exec: (command, cwd, options) => runSandboxed({ ...policy, cwd }, '/bin/bash', ['--noprofile', '--norc', '-c', command], { ...options, timeout: Math.min((options.timeout || 60) * 1000, sandboxMode(policy) !== 'strict' ? 1800000 : 300000) }),
   } }));
   const tools = ['read', 'write', 'edit', 'bash', 'agent_message', 'ask_parent'];
   // 实时输出速度写在本代理目录，面板服务读取后推送给页面；只计数，不保存内容。
@@ -34,6 +34,7 @@ export default function (pi: ExtensionAPI) {
         body: JSON.stringify({ action: 'reserve_request', agentId: process.env.PI_SUBAGENT_ID, messageId: randomUUID() }) });
       if (!response.ok) process.exit(77);
       const result = await response.json();
+      if (result.warning) pi.sendUserMessage(result.warning, { deliverAs: 'steer' }).catch(() => {});
       const payload = event.payload as Record<string, unknown>;
       const api = context.model?.api;
       if (api === 'openai-responses' || api === 'openai-codex-responses') payload.max_output_tokens = Math.min(Number(payload.max_output_tokens) || result.maxOutputTokens, result.maxOutputTokens);

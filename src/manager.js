@@ -252,7 +252,7 @@ export class Manager extends EventEmitter {
       if (activeStatuses.has(agent.record.status)) throw new Error('Wait for completion or interrupt before changing policy');
       const next = agentPolicy(policy, agent.record.model); assertModelAllowed(next, agent.record.model);
       if (!agent.rpc || agent.rpc.exited) { this.capacity(); agent.lock = this.claim(agent.record); }
-      agent.record.policy = next; agent.record.limitReason = undefined;
+      agent.record.policy = next; agent.record.limitReason = undefined; agent.record.budgetWarned = false;
       this.event(agent, 'policy_changed', { policy: agent.record.policy, authorizationReference });
       // Tool policy is loaded once per Pi process: restart an idle session without replaying work.
       agent.closing = true; await agent.rpc?.close(); agent.closing = false; await this.launch(agent);
