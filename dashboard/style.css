@@ -50,6 +50,14 @@ svg { flex: none; }
 .list { flex: 1; overflow-y: auto; padding: 0 8px 12px; scrollbar-width: thin; }
 .group-head { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: none; padding: 14px 10px 4px; font-size: 12.5px; color: var(--muted); text-align: left; }
 .group-head:hover { color: var(--ink); }
+.proj-head { display: flex; align-items: center; gap: 6px; width: 100%; border: 0; background: none; padding: 14px 10px 4px; font-size: 13.5px; font-weight: 700; color: var(--ink); text-align: left; }
+.proj-head .chev { font-size: 10px; color: var(--muted); transition: transform .2s; }
+.proj-head[aria-expanded="false"] .chev { transform: rotate(-90deg); }
+.proj-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj-count { font-size: 11.5px; font-weight: 400; color: var(--muted); }
+.proj-flag { min-width: 16px; padding: 0 5px; border-radius: 8px; font-size: 11px; font-weight: 600; text-align: center; line-height: 16px; }
+.proj-flag.fail { background: var(--fail-soft); color: var(--fail); } .proj-flag.run { background: var(--run-soft); color: var(--run); }
+.proj-head ~ .group-head { padding-left: 18px; }
 .group-head .chev { font-size: 10px; transition: transform .2s; }
 .group-head[aria-expanded="false"] .chev { transform: rotate(-90deg); }
 /* 四类分组各有不同的灯：需要处理=红色双跳，正在工作=蓝色呼吸，已结束=绿色常亮，已关闭=灰色。 */

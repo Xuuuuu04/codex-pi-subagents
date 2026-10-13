@@ -132,16 +132,31 @@ function renderChips() {
   for (const f of filters) chips.append(el('button', { type: 'button', 'aria-pressed': String(state.filter === f.key), onclick: () => { state.filter = f.key; store.set('filter', f.key); renderChips(); renderList(); } },
     f.title, el('span', { text: state.agents.filter(a => f.match(a.status)).length })));
 }
+const projectOf = a => a.sourceCwd || a.cwd || '未知目录';
+/** 目录名作标题；家目录显示为 ~，同名目录靠悬停提示看完整路径。 */
+const projectLabel = path => path === '未知目录' ? path : path.replace(/\/+$/, '').split('/').pop() || '/';
 function renderList() {
   const focused = document.activeElement?.dataset?.agent;
   const list = $('#list'); const scroll = list.scrollTop; list.replaceChildren();
   const visible = visibleAgents(); const searching = $('#search').value.trim() || state.filter !== 'all';
+  const toggle = key => { state.collapsed.has(key) ? state.collapsed.delete(key) : state.collapsed.add(key); store.set('collapsed', [...state.collapsed]); renderList(); };
+  // 第一层按管理目录（代理所属的项目目录）组织，最近有动静的目录排在前面；第二层仍是状态分组。
+  const projects = new Map();
+  for (const a of visible) { const key = projectOf(a); (projects.get(key) || projects.set(key, []).get(key)).push(a); }
+  const ordered = [...projects].sort((x, y) => Math.max(...y[1].map(a => ms(a.updatedAt) || 0)) - Math.max(...x[1].map(a => ms(a.updatedAt) || 0)));
+  for (const [project, agents] of ordered) {
+    const projectKey = `p:${project}`; const projectOpen = searching || !state.collapsed.has(projectKey);
+    const busy = agents.filter(a => groups[1].match(a.status)).length, needs = agents.filter(a => groups[0].match(a.status)).length;
+    list.append(el('button', { type: 'button', class: 'proj-head', 'aria-expanded': String(projectOpen), title: project, onclick: () => toggle(projectKey) },
+      el('span', { class: 'chev', text: '▾' }), el('span', { class: 'proj-name', text: projectLabel(project) }),
+      needs ? el('span', { class: 'proj-flag fail', title: '需要处理', text: String(needs) }) : null, busy ? el('span', { class: 'proj-flag run', title: '正在工作', text: String(busy) }) : null,
+      el('span', { class: 'proj-count', text: agents.length })));
+    if (!projectOpen) continue;
   for (const group of groups) {
-    const members = visible.filter(a => group.match(a.status)); if (!members.length) continue;
+    const members = agents.filter(a => group.match(a.status)); if (!members.length) continue;
     const open = searching || !state.collapsed.has(group.key);
-    list.append(el('button', { type: 'button', class: 'group-head', 'aria-expanded': String(open), onclick: () => {
-      state.collapsed.has(group.key) ? state.collapsed.delete(group.key) : state.collapsed.add(group.key); store.set('collapsed', [...state.collapsed]); renderList();
-    } }, el('span', { class: 'chev', text: '▾' }), el('span', { class: `group-dot ${group.key}` }), `${group.title}`, el('span', { text: members.length })));
+    list.append(el('button', { type: 'button', class: 'group-head', 'aria-expanded': String(open), onclick: () => toggle(group.key) },
+      el('span', { class: 'chev', text: '▾' }), el('span', { class: `group-dot ${group.key}` }), `${group.title}`, el('span', { text: members.length })));
     if (!open) continue;
     for (const a of members) {
       const row = el('button', { type: 'button', class: `row ${a.status === 'closed' ? 'closed' : ''}`, 'data-agent': a.id, 'aria-current': String(a.id === state.selected),
@@ -150,6 +165,7 @@ function renderList() {
       list.append(row);
       if (focused === a.id) row.focus({ preventScroll: true });
     }
+  }
   }
   list.scrollTop = scroll;
   const empty = $('#empty'); empty.hidden = visible.length > 0;
