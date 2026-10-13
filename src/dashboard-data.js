@@ -53,6 +53,19 @@ export function transcriptMessage(entry, index = 0) {
     stopReason: m.stopReason, error: m.stopReason === 'error' ? String(m.errorMessage || '').slice(0, 2000) : undefined };
 }
 
+/** Output speed of each finished model request: output tokens over request wall time, from the saved session. */
+export function requestSpeeds(entries, limit = 40) {
+  const speeds = [];
+  for (const entry of entries) {
+    const m = entry.message;
+    if (entry.type !== 'message' || m?.role !== 'assistant' || !m.usage || typeof m.timestamp !== 'number') continue;
+    const end = Date.parse(entry.timestamp); const seconds = (end - m.timestamp) / 1000;
+    if (!(seconds > 0.2) || !m.usage.output) continue;
+    speeds.push({ at: entry.timestamp, output: m.usage.output, seconds: Math.round(seconds * 100) / 100, tps: Math.round(m.usage.output / seconds * 10) / 10 });
+  }
+  return speeds.slice(-limit);
+}
+
 const minute = 60 * 1000;
 /** Compact progress figures for the list: tool totals, last step and per-minute tool activity of the last 30 minutes. */
 export function summarizeActivity(events, now = Date.now()) {
@@ -103,11 +116,27 @@ export class DashboardData {
       questions: events.filter(e => e.type === 'question' && questionIds.has(e.questionId)).map(e => ({ questionId: e.questionId, question: e.question, time: e.time })),
       recentMessage: events.findLast(e => e.type === 'message')?.message?.slice(-2000), activity, events };
   }
+  /** Bounded entries of the agent's private session file; the path must stay inside its session directory. */
+  sessionEntries(directory, record, limit = 500) {
+    if (!record.sessionFile) return [];
+    const file = fs.realpathSync(record.sessionFile);
+    const allowed = fs.realpathSync(path.join(directory, 'sessions'));
+    if (!file.startsWith(allowed + path.sep)) throw new Error('Session file is outside its private session directory');
+    return readTail(file, limit);
+  }
+  /** Latest finished request speed of a working agent, for the combined figure in the list. */
+  latestSpeed(id) {
+    try {
+      const directory = this.directory(id);
+      const record = JSON.parse(fs.readFileSync(path.join(directory, 'agent.json'), 'utf8'));
+      return requestSpeeds(this.sessionEntries(directory, record, 60), 1)[0] || null;
+    } catch { return null; }
+  }
   list() {
     if (!fs.existsSync(this.root)) return { agents: [], errors: [], refreshedAt: new Date().toISOString() };
     const agents = []; const errors = [];
     for (const id of fs.readdirSync(this.root).filter(isAgentId)) {
-      try { const { events, ...agent } = this.snapshot(id); agents.push(agent); }
+      try { const { events, ...agent } = this.snapshot(id); if (working.has(agent.status)) agent.speed = this.latestSpeed(id); agents.push(agent); }
       catch (error) { errors.push({ id, error: error.message }); }
     }
     agents.sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''));
@@ -118,19 +147,16 @@ export class DashboardData {
     const directory = this.directory(id);
     const record = JSON.parse(fs.readFileSync(path.join(directory, 'agent.json'), 'utf8'));
     const messages = [];
-    let transcriptError;
-    if (record.sessionFile) {
-      try {
-        const file = fs.realpathSync(record.sessionFile);
-        const allowed = fs.realpathSync(path.join(directory, 'sessions'));
-        if (!file.startsWith(allowed + path.sep)) throw new Error('Session file is outside its private session directory');
-        for (const entry of readTail(file, 500)) {
-          const message = transcriptMessage(entry, messages.length);
-          if (message) messages.push(message);
-        }
-      } catch (error) { transcriptError = error.message; }
-    }
-    return { agent, messages: messages.slice(-160), live: working.has(agent.status) ? this.live(directory) : null, transcriptError, refreshedAt: new Date().toISOString() };
+    let transcriptError; let speeds = [];
+    try {
+      const entries = this.sessionEntries(directory, record);
+      for (const entry of entries) {
+        const message = transcriptMessage(entry, messages.length);
+        if (message) messages.push(message);
+      }
+      speeds = requestSpeeds(entries);
+    } catch (error) { transcriptError = error.message; }
+    return { agent, messages: messages.slice(-160), speeds, live: working.has(agent.status) ? this.live(directory) : null, transcriptError, refreshedAt: new Date().toISOString() };
   }
   /** Streaming mirror written by newer managers; stale files from a stopped run are ignored. */
   live(directory) {

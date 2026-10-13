@@ -93,6 +93,10 @@ async function api(path) {
 }
 
 /* ---------- 左下角：分布与合计 ---------- */
+function combinedSpeed() {
+  const recent = state.agents.filter(a => working.has(a.status) && a.speed && Date.now() - ms(a.speed.at) < 180000);
+  return recent.length ? `${Math.round(recent.reduce((sum, a) => sum + a.speed.tps, 0))}/s` : '—';
+}
 function renderOverview() {
   const counts = new Map(); for (const a of state.agents) counts.set(a.status, (counts.get(a.status) || 0) + 1);
   const dist = $('#dist'); dist.replaceChildren();
@@ -104,7 +108,8 @@ function renderOverview() {
   $('#totals').replaceChildren(
     el('span', {}, '运行', el('b', { text: state.agents.filter(a => working.has(a.status)).length })),
     el('span', { title: '全部会话输入 + 输出 token' }, 'Token', el('b', { text: tokens(sum('input') + sum('output')) })),
-    el('span', { title: '模型服务上报的费用，不是真实扣费记录' }, '上报', el('b', { text: cost(sum('reportedCost')) })));
+    el('span', { title: '模型服务上报的费用，不是真实扣费记录' }, '上报', el('b', { text: cost(sum('reportedCost')) })),
+    el('span', { title: '工作中会话最近一次请求的输出速度之和' }, '速度', el('b', { text: combinedSpeed() })));
   const waiting = counts.get('waiting') || 0;
   document.title = waiting ? `(${waiting} 待答复) Pi 调度台` : 'Pi 调度台';
 }
@@ -329,6 +334,57 @@ function renderRecords() {
 }
 
 /* ---------- 刷新 ---------- */
+/* ---------- Token 速度 ---------- */
+// 正在生成时用逐字镜像的增长估算，结束后用会话记录里的实测值；估算按中文约 1.3 字、其他约 3.8 字符一个 token。
+const speedState = { agent: '', message: '', last: null, rate: 0, history: [] };
+function estimateTokens(text) { let cjk = 0; for (const ch of text) if (/[　-鿿＀-￯]/.test(ch)) cjk++; return cjk / 1.3 + (text.length - cjk) / 3.8; }
+function liveTokens(live) { return (live?.message?.blocks || []).reduce((sum, block) => sum + (block?.text ? estimateTokens(block.text) : 0), 0); }
+function sampleLive(data) {
+  const now = Date.now(); const id = data.agent.id; const message = data.live?.message?.startedAt || '';
+  if (speedState.agent !== id) Object.assign(speedState, { agent: id, message: '', last: null, rate: 0, history: [] });
+  if (!message) { speedState.message = ''; speedState.last = null; speedState.rate = 0; return null; }
+  const total = liveTokens(data.live);
+  if (speedState.message !== message || !speedState.last) { Object.assign(speedState, { message, last: { total, time: now }, rate: 0 }); return 0; }
+  const seconds = (now - speedState.last.time) / 1000;
+  if (seconds >= 0.5) {
+    const instant = Math.max(0, (total - speedState.last.total) / seconds);
+    speedState.rate = speedState.rate ? speedState.rate * 0.5 + instant * 0.5 : instant;
+    speedState.last = { total, time: now };
+    speedState.history.push({ time: now, rate: speedState.rate }); speedState.history = speedState.history.filter(item => now - item.time < 120000);
+  }
+  return speedState.rate;
+}
+function speedChart(speeds) {
+  const width = 280, height = 64, chart = svg('svg', { viewBox: `0 0 ${width} ${height}`, class: 'speed-chart', role: 'img', 'aria-label': '最近每次请求的输出速度' });
+  if (!speeds.length) return chart;
+  const top = Math.max(10, ...speeds.map(item => item.tps)) * 1.1; const gap = 2; const bar = Math.max(3, (width - gap * (speeds.length - 1)) / speeds.length);
+  speeds.forEach((item, index) => {
+    const h = Math.max(2, item.tps / top * (height - 4));
+    const rect = svg('rect', { x: index * (bar + gap), y: height - h, width: bar, height: h, rx: 1.5, class: index === speeds.length - 1 ? 'last' : '' });
+    const title = svg('title'); title.textContent = `${item.tps} tok/s · ${item.output} token · ${item.seconds} 秒 · ${ago(item.at)}`; rect.append(title); chart.append(rect);
+  });
+  const average = speeds.reduce((sum, item) => sum + item.tps, 0) / speeds.length;
+  chart.append(svg('line', { x1: 0, x2: width, y1: height - average / top * (height - 4), y2: height - average / top * (height - 4), class: 'avg' }));
+  return chart;
+}
+function renderSpeed(data) {
+  const live = sampleLive(data); const speeds = data.speeds || []; const latest = speeds.at(-1);
+  const streaming = live !== null && working.has(data.agent.status);
+  const value = streaming ? live : latest?.tps;
+  const average = speeds.length ? speeds.reduce((sum, item) => sum + item.output, 0) / speeds.reduce((sum, item) => sum + item.seconds, 0) : 0;
+  const peak = speeds.length ? Math.max(...speeds.map(item => item.tps)) : 0;
+  const caption = streaming ? (live ? '正在生成 · 按可见文字实时估算' : '正在思考 · 暂无可见输出') : latest ? `最近一次请求 · ${latest.output} token / ${latest.seconds} 秒` : '还没有完成的请求';
+  $('#p-speed').replaceChildren(
+    el('div', { class: `speed-now ${streaming ? 'live' : ''}` }, el('b', { text: value == null ? '—' : value >= 100 ? Math.round(value) : value.toFixed(1) }), el('span', { text: 'tok/s' }), streaming ? el('i', { class: 'pulse' }) : null),
+    el('div', { class: 'sub', text: caption }),
+    speedChart(speeds.slice(-30)),
+    el('dl', { class: 'speed-figures' },
+      el('div', {}, el('dt', { text: '平均' }), el('dd', { text: speeds.length ? `${average.toFixed(1)}` : '—' })),
+      el('div', {}, el('dt', { text: '最高' }), el('dd', { text: speeds.length ? `${peak}` : '—' })),
+      el('div', {}, el('dt', { text: '请求' }), el('dd', { text: String(speeds.length) }))),
+    el('p', { class: 'speed-note', text: '柱子是最近每次请求的实测输出速度（含首字等待），横线是平均值。' }));
+}
+
 async function refreshDetail() {
   if (!state.selected || state.detailFetching) return; state.detailFetching = true;
   let data; const requested = state.selected;
@@ -336,7 +392,7 @@ async function refreshDetail() {
   if (state.selected !== requested) return;
   state.detail = data; const tools = pairTools(data.agent.events);
   $('#placeholder').hidden = true; applyPanel();
-  renderHead(data, tools); renderLane(data.agent, tools); renderRecords();
+  renderHead(data, tools); renderSpeed(data); renderLane(data.agent, tools); renderRecords();
 }
 function notifyChanges() {
   for (const a of state.agents) {

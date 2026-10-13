@@ -284,3 +284,20 @@ td.bad, tr.err td:first-child code { color: var(--fail); }
   .events li { grid-template-columns: 64px 1fr; } .events .body { grid-column: 1 / -1; }
   .info { grid-template-columns: 1fr; gap: 2px; } .info dd { margin-bottom: 10px; }
 }
+
+/* Token 速度 */
+.speed-now { display: flex; align-items: baseline; gap: 6px; }
+.speed-now b { font: 600 30px/1.1 var(--mono, ui-monospace); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.speed-now span { color: var(--muted); font-size: 12.5px; }
+.speed-now.live b { color: var(--accent); }
+.speed-now .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); align-self: center; margin-left: 2px; animation: speed-pulse 1.2s ease-in-out infinite; }
+@keyframes speed-pulse { 50% { opacity: .25; transform: scale(.7); } }
+.speed .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.speed-chart { width: 100%; height: 64px; display: block; margin: 12px 0 8px; }
+.speed-chart rect { fill: color-mix(in srgb, var(--accent) 35%, transparent); }
+.speed-chart rect.last { fill: var(--accent); }
+.speed-chart .avg { stroke: var(--ink-2); stroke-width: 1; stroke-dasharray: 3 3; opacity: .55; }
+.speed-figures { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; margin: 0; }
+.speed-figures dt { color: var(--muted); font-size: 11.5px; }
+.speed-figures dd { margin: 0; font: 600 14px var(--mono, ui-monospace); font-variant-numeric: tabular-nums; }
+.speed-note { color: var(--muted); font-size: 11.5px; margin: 8px 0 0; }
