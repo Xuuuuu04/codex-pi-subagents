@@ -34,6 +34,11 @@ export default function (pi: ExtensionAPI) {
       else if (api === 'anthropic-messages') payload.max_tokens = Math.min(Number(payload.max_tokens) || result.maxOutputTokens, result.maxOutputTokens);
       else if (api === 'openai-completions' && payload.max_tokens === undefined && payload.max_completion_tokens === undefined) payload.max_tokens = result.maxOutputTokens;
       for (const key of ['max_tokens', 'max_completion_tokens', 'max_output_tokens']) if (typeof payload[key] === 'number') payload[key] = Math.min(payload[key] as number, result.maxOutputTokens);
+      // Codex 的快速模式是同一模型加 priority 服务等级；ChatGPT 账号不接受 "-fast" 模型名。
+      if (api === 'openai-codex-responses' && typeof payload.model === 'string' && payload.model.endsWith('-fast')) {
+        payload.model = payload.model.slice(0, -'-fast'.length);
+        payload.service_tier = 'priority';
+      }
       return payload;
     } catch { process.exit(77); } // Pi catches hook exceptions; exiting is required to block an unapproved provider request.
   });

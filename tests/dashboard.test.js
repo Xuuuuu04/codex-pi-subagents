@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { setup, spawn, settled } from './helpers/setup.js';
-import { DashboardData, readTail } from '../src/dashboard-data.js';
+import { DashboardData, readTail, summarizeActivity } from '../src/dashboard-data.js';
 import { startDashboard } from '../src/dashboard.js';
 
 test('dashboard reads live agents and identifies disconnected controllers without changing ownership', async t => {
@@ -69,4 +69,17 @@ test('saved session rendering omits hidden reasoning, bounds text and rejects ar
   assert.equal(detail.messages[0].text, '<script>sample</script>'); assert.ok(!JSON.stringify(detail).includes('HIDDEN'));
   record.sessionFile = path.join(cwd, 'outside.jsonl'); fs.writeFileSync(record.sessionFile, JSON.stringify(entry) + '\n'); manager.storage.save(record);
   assert.match(data.detail(a.id).transcriptError, /outside/);
+});
+
+test('activity summary counts finished tools, failures and recent per-minute buckets', () => {
+  const now = Date.parse('2026-10-13T02:00:00Z'); const at = minutes => new Date(now - minutes * 60000).toISOString();
+  const events = [
+    { type: 'tool_execution_start', time: at(45), toolName: 'bash' }, { type: 'tool_execution_end', time: at(45), toolName: 'bash' },
+    { type: 'tool_execution_end', time: at(2), toolName: 'read', isError: true }, { type: 'tool_execution_end', time: at(0.5), toolName: 'bash' },
+    { type: 'message', time: at(0.2), message: 'done' },
+  ];
+  const activity = summarizeActivity(events, now);
+  assert.equal(activity.toolCalls, 3); assert.equal(activity.toolErrors, 1);
+  assert.equal(activity.buckets.length, 30); assert.equal(activity.buckets[29], 1); assert.equal(activity.buckets[27], 1);
+  assert.equal(activity.buckets.reduce((a, b) => a + b), 2); assert.equal(activity.lastEvent.type, 'message');
 });

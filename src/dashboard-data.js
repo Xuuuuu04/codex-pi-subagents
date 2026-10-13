@@ -21,6 +21,20 @@ export function readTail(file, limit = 500) {
   } finally { fs.closeSync(fd); }
 }
 
+const minute = 60 * 1000;
+/** Compact progress figures for the list: tool totals, last step and per-minute tool activity of the last 30 minutes. */
+export function summarizeActivity(events, now = Date.now()) {
+  const ends = events.filter(e => e.type === 'tool_execution_end');
+  const buckets = Array(30).fill(0);
+  for (const e of ends) {
+    const age = Math.floor((now - Date.parse(e.time)) / minute);
+    if (age >= 0 && age < 30) buckets[29 - age]++;
+  }
+  const last = events.at(-1);
+  return { toolCalls: ends.length, toolErrors: ends.filter(e => e.isError).length, buckets,
+    lastEvent: last && { type: last.type, time: last.time, toolName: last.toolName } };
+}
+
 /** Read-only projection of existing MCP records; never claim, resume or command an agent. */
 export class DashboardData {
   constructor(root) { this.root = path.resolve(root); }
@@ -45,6 +59,7 @@ export class DashboardData {
     }
     const status = !controllerAlive && active.has(record.status) ? 'disconnected' : record.status;
     const questionIds = new Set(record.questionIds || []);
+    const activity = summarizeActivity(events);
     return { id, name: record.name, status, recordedStatus: record.status, controllerAlive,
       model: record.model, thinking: record.thinking, temporaryModel: record.restoreModel,
       cwd: record.workspace?.cwd, sourceCwd: record.workspace?.sourceCwd, workspaceMode: record.workspace?.mode,
@@ -52,7 +67,7 @@ export class DashboardData {
       sequence: record.sequence, usage: record.usage, lastText: record.lastText?.slice(-12000), error: record.error,
       currentTools: active.has(status) ? [...pending.values()] : [],
       questions: events.filter(e => e.type === 'question' && questionIds.has(e.questionId)).map(e => ({ questionId: e.questionId, question: e.question, time: e.time })),
-      recentMessage: events.findLast(e => e.type === 'message')?.message?.slice(-2000), events };
+      recentMessage: events.findLast(e => e.type === 'message')?.message?.slice(-2000), activity, events };
   }
   list() {
     if (!fs.existsSync(this.root)) return { agents: [], errors: [], refreshedAt: new Date().toISOString() };

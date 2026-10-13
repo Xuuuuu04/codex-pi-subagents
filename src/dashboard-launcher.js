@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { processAlive } from './storage.js';
+import { defaultDashboardPort } from './dashboard.js';
 
 export const defaultStateRoot = fileURLToPath(new URL('../.agents/runtime/', import.meta.url));
 const script = fileURLToPath(new URL('./dashboard.js', import.meta.url));
@@ -24,16 +25,23 @@ async function running(root) {
 
 /** Start one independent read-only viewer; controller shutdown leaves ongoing monitoring available. */
 export async function ensureDashboard(root = defaultStateRoot) {
-  const previous = await running(root); if (previous) return previous;
+  const port = Number(process.env.PI_DASHBOARD_PORT || defaultDashboardPort);
+  const previous = await running(root);
+  if (previous && Number(new URL(previous.url).port) === port) return previous;
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   const log = fs.openSync(path.join(root, 'dashboard.log'), 'a', 0o600);
   let failure;
   const child = spawn(process.execPath, [script], { detached: true, stdio: ['ignore', log, log], env: { ...process.env, PI_SUBAGENTS_STATE_DIR: root } });
   fs.closeSync(log); child.on('error', error => { failure = error; }); child.unref();
   for (let n = 0; n < 30; n++) {
-    const info = await running(root); if (info) return info;
+    const info = await running(root);
+    if (info && info.pid !== previous?.pid) {
+      // The old viewer only reads files; retiring it after a port change leaves every agent untouched.
+      if (previous) try { process.kill(previous.pid, 'SIGTERM'); } catch {}
+      return info;
+    }
     if (failure) throw failure;
     await new Promise(resolve => setTimeout(resolve, 100));
   }
-  throw new Error('Dashboard did not start. Check .agents/runtime/dashboard.log and whether port 4317 is occupied.');
+  throw new Error(`Dashboard did not start. Check .agents/runtime/dashboard.log and whether port ${port} is occupied.`);
 }

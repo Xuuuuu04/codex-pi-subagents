@@ -5,10 +5,11 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { DashboardData } from './dashboard-data.js';
 
+export const defaultDashboardPort = 3141;
 const assets = fileURLToPath(new URL('../dashboard/', import.meta.url));
 
 /** Private loopback HTTP viewer. All agent operations remain with the owning Codex connection. */
-export async function startDashboard({ root, port = 4317, token = randomBytes(32).toString('hex') }) {
+export async function startDashboard({ root, port = defaultDashboardPort, token = randomBytes(32).toString('hex') }) {
   const data = new DashboardData(root);
   const files = new Map([['/', ['index.html', 'text/html']], ['/app.js', ['app.js', 'text/javascript']], ['/style.css', ['style.css', 'text/css']]]);
   const server = http.createServer((request, response) => {
@@ -48,7 +49,7 @@ export async function startDashboard({ root, port = 4317, token = randomBytes(32
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const root = process.env.PI_SUBAGENTS_STATE_DIR || fileURLToPath(new URL('../.agents/runtime/', import.meta.url));
-  const dashboard = await startDashboard({ root, port: Number(process.env.PI_DASHBOARD_PORT || 4317) });
+  const dashboard = await startDashboard({ root, port: Number(process.env.PI_DASHBOARD_PORT || defaultDashboardPort) });
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(root, 'dashboard.json'), JSON.stringify({ pid: process.pid, url: dashboard.url, token: dashboard.token, startedAt: new Date().toISOString() }), { mode: 0o600 });
   const stop = () => dashboard.close().then(() => process.exit(0));
