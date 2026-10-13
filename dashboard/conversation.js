@@ -125,7 +125,7 @@ function editsCard(edits, key, ctx) {
 function thinkingRow(message, ctx) {
   const spent = Date.parse(message.time) - Date.parse(message.startedAt);
   const label = `思考了 ${Number.isFinite(spent) ? shortDuration(spent) : ''}`;
-  if (!message.thinking) return el('div', { class: 'think-row flat' }, icon('think'), label, message.thinkingRedacted ? el('span', { class: 'muted', text: ' · 模型未公开思考内容' }) : null);
+  if (!message.thinking) return el('div', { class: 'step' }, icon('think'), label, message.thinkingRedacted ? el('span', { class: 'muted', text: ' · 模型未公开思考内容' }) : null);
   const key = `${ctx.agentId}:think:${message.id}`;
   const node = el('details', { class: 'think-row', 'data-key': key }, el('summary', {}, icon('think'), label), el('div', { class: 'think-text' }, markdown(message.thinking)));
   node.open = ctx.expanded.get(key) ?? false;
@@ -135,54 +135,84 @@ function userBubble(message, ctx) {
   const text = message.text.replace(/^\[Pi message [^\]]+\]\n/, '');
   const key = `${ctx.agentId}:user:${message.id}`; const long = text.length > 220 || text.split('\n').length > 4;
   const bubble = el('div', { class: `bubble ${long && !ctx.expanded.get(key) ? 'clamped' : ''}`, 'data-key': key }, el('div', { class: 'bubble-text', text }));
-  if (long) bubble.append(el('button', { type: 'button', class: 'more', text: ctx.expanded.get(key) ? '收起' : '显示更多', onclick: event => {
-    const open = bubble.classList.toggle('clamped'); ctx.expanded.set(key, !open); event.target.textContent = open ? '显示更多' : '收起';
+  if (long) bubble.append(el('button', { type: 'button', class: 'more', text: ctx.expanded.get(key) ? '收起 ⌃' : '显示更多 ⌄', onclick: event => {
+    const open = bubble.classList.toggle('clamped'); ctx.expanded.set(key, !open); event.target.textContent = open ? '显示更多 ⌄' : '收起 ⌃';
   } }));
-  return el('div', { class: 'turn-user' }, el('time', { text: clock(message.time) }), bubble);
+  return el('div', { class: 'turn-user', title: fullDate(message.time) }, bubble);
 }
 function liveTail(data, ctx, pendingCalls, lastTime) {
   const tail = el('div', { class: 'live-tail' }); const live = data.live; const agent = data.agent;
-  if (agent.status === 'waiting') { tail.append(el('div', { class: 'live-row wait' }, icon('ask'), '暂停在提问上，等待所属聊天答复')); return tail; }
+  if (agent.status === 'waiting') { tail.append(el('div', { class: 'step' }, icon('ask'), '暂停在提问上，等待所属聊天答复')); return tail; }
   if (!ctx.working) return null;
   if (live?.message) {
     const since = Date.parse(live.message.startedAt);
     for (const block of live.message.blocks.filter(Boolean)) {
-      if (block.type === 'thinking') tail.append(el('div', { class: 'live-think' }, el('div', { class: 'live-row shimmer' }, icon('think'), '正在思考', el('span', { class: 'muted', 'data-since': since, text: shortDuration(Date.now() - since) })), block.text ? el('div', { class: 'think-text live' }, markdown(block.text.slice(-1600))) : null));
+      if (block.type === 'thinking') tail.append(el('div', { class: 'live-think' }, el('div', { class: 'step shimmer' }, icon('think'), '正在思考', el('span', { class: 'muted', 'data-since': since, text: shortDuration(Date.now() - since) })), block.text ? el('div', { class: 'think-text live' }, markdown(block.text.slice(-1600))) : null));
       else if (block.type === 'text') tail.append(el('div', { class: 'live-text' }, markdown(block.text), el('span', { class: 'caret' })));
-      else if (block.type === 'toolCall') tail.append(el('div', { class: 'live-row shimmer' }, icon('tool'), block.done ? `准备调用 ${block.name}` : `正在写 ${block.name || '工具'} 的参数`, el('span', { class: 'muted', text: `${block.text.length} 字` })));
+      else if (block.type === 'toolCall') tail.append(el('div', { class: 'step shimmer' }, icon('tool'), block.done ? `准备调用 ${block.name}` : `正在写 ${block.name || '工具'} 的参数`, el('span', { class: 'muted', text: `${block.text.length} 字` })));
     }
-    if (!live.message.blocks.filter(Boolean).length) tail.append(el('div', { class: 'live-row shimmer' }, icon('think'), '正在等待模型响应', el('span', { class: 'muted', 'data-since': since, text: shortDuration(Date.now() - since) })));
+    if (!live.message.blocks.filter(Boolean).length) tail.append(el('div', { class: 'step shimmer' }, icon('think'), '正在等待模型响应', el('span', { class: 'muted', 'data-since': since, text: shortDuration(Date.now() - since) })));
     return tail;
   }
   if (!pendingCalls) {
     const since = Date.parse(lastTime) || Date.now();
-    tail.append(el('div', { class: 'live-row shimmer' }, icon('think'), '正在思考', el('span', { class: 'muted', 'data-since': since, text: shortDuration(Date.now() - since) })));
+    tail.append(el('div', { class: 'step shimmer' }, icon('think'), '正在思考', el('span', { class: 'muted', 'data-since': since, text: shortDuration(Date.now() - since) })));
     return tail;
   }
   return null;
 }
+function longDuration(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return '';
+  const s = Math.round(milliseconds / 1000); if (s < 60) return `${s}秒`;
+  const m = Math.floor(s / 60); if (m < 60) return `${m}分${s % 60 ? `${s % 60}秒` : ''}`;
+  return `${Math.floor(m / 60)}小时${m % 60 ? `${m % 60}分` : ''}`;
+}
+/** Split the transcript into Codex-style rounds: a task, the folded process, then the final reply. */
 function renderConversation(data, expanded) {
   const ctx = { agentId: data.agent.id, expanded, working: ['starting', 'running', 'finishing'].includes(data.agent.status), live: data.live };
   const results = new Map(data.messages.filter(m => m.role === 'toolResult').map(m => [m.toolCallId, m]));
-  const convo = el('div', { class: 'convo' }); let edits = []; let runKey = 'start'; let pending = 0;
-  const flushEdits = () => { if (edits.length) convo.append(editsCard(edits, `${ctx.agentId}:edits:${runKey}`, ctx)); edits = []; };
+  const runs = []; let run = null;
   for (const message of data.messages) {
-    if (message.role === 'user') { flushEdits(); runKey = message.id; convo.append(userBubble(message, ctx)); continue; }
-    if (message.role !== 'assistant') continue;
-    pending = 0; // Only the latest assistant turn can still be waiting for its tools.
-    const turn = el('div', { class: 'turn-agent' });
-    if (message.thinking || message.thinkingRedacted) turn.append(thinkingRow(message, ctx));
-    if (message.text) turn.append(markdown(message.text));
-    if (message.error) turn.append(el('div', { class: 'win-error', text: `模型请求失败：${message.error}` }));
-    for (const call of message.calls) {
-      const result = results.get(call.id); if (!result) pending++;
-      turn.append(toolItem(call, result, ctx));
-      if (result && !result.isError && (call.name === 'edit' || call.name === 'write')) edits.push({ call, result });
-    }
-    if (turn.childNodes.length) convo.append(turn);
+    if (message.role === 'user') { run = { user: message, steps: [] }; runs.push(run); }
+    else if (message.role === 'assistant') { if (!run) { run = { user: null, steps: [] }; runs.push(run); } run.steps.push(message); }
   }
-  flushEdits();
-  const tail = liveTail(data, ctx, ctx.working && pending > 0, data.messages.at(-1)?.time); if (tail) convo.append(tail);
-  if (!data.messages.length && !tail) convo.append(el('p', { class: 'records-empty', text: '暂时没有已保存的对话。' }));
+  const convo = el('div', { class: 'convo' });
+  runs.forEach((r, index) => {
+    const active = index === runs.length - 1 && (ctx.working || data.agent.status === 'waiting');
+    if (r.user) convo.append(userBubble(r.user, ctx));
+    const last = r.steps.at(-1);
+    const final = !active && last && last.text && !last.calls.length ? last : null;
+    const process = final ? r.steps.slice(0, -1) : r.steps;
+    const body = el('div', { class: 'run-body' }); const edits = []; let pending = 0;
+    for (const message of process) {
+      pending = 0;
+      if (message.thinking || message.thinkingRedacted) body.append(thinkingRow(message, ctx));
+      if (message.text) body.append(markdown(message.text));
+      if (message.error) body.append(el('div', { class: 'win-error', text: `模型请求失败：${message.error}` }));
+      for (const call of message.calls) {
+        const result = results.get(call.id); if (!result) pending++;
+        body.append(toolItem(call, result, ctx));
+        if (result && !result.isError && (call.name === 'edit' || call.name === 'write')) edits.push({ call, result });
+      }
+    }
+    if (final?.thinking || final?.thinkingRedacted) body.append(thinkingRow(final, ctx));
+    if (active) { const tail = liveTail(data, ctx, pending > 0, r.steps.at(-1)?.time || r.user?.time); if (tail) body.append(tail); }
+    const start = Date.parse(r.user?.time || r.steps[0]?.startedAt || r.steps[0]?.time);
+    const end = active ? Date.now() : Date.parse(last?.time || r.user?.time);
+    if (body.childNodes.length) {
+      const key = `${ctx.agentId}:run:${r.user?.id || 'start'}`;
+      const summary = el('summary', { class: active ? 'active' : '' }, active ? el('span', { class: 'spin' }) : null,
+        active ? el('span', { 'data-run-start': start, text: `正在工作 ${longDuration(end - start)}` }) : `用时 ${longDuration(end - start)}`);
+      const fold = el('details', { class: 'run-fold', 'data-key': key }, summary, body);
+      fold.open = expanded.get(key) ?? active;
+      convo.append(fold);
+    }
+    if (final) convo.append(el('div', { class: 'final' }, markdown(final.text)));
+    if (edits.length) convo.append(editsCard(edits, `${ctx.agentId}:edits:${r.user?.id || 'start'}`, ctx));
+  });
+  if (!runs.length) {
+    const tail = liveTail(data, ctx, false, null);
+    convo.append(tail || el('p', { class: 'records-empty', text: '暂时没有已保存的对话。' }));
+  }
   return convo;
 }

@@ -63,7 +63,9 @@ export function summarizeActivity(events, now = Date.now()) {
     if (age >= 0 && age < 30) buckets[29 - age]++;
   }
   const last = events.at(-1);
-  return { toolCalls: ends.length, toolErrors: ends.filter(e => e.isError).length, buckets,
+  // Closing or resuming later must not stretch the time the agent actually worked.
+  const lastWork = events.findLast(e => !['closed', 'resumed', 'ready'].includes(e.type));
+  return { lastWorkAt: lastWork?.time, toolCalls: ends.length, toolErrors: ends.filter(e => e.isError).length, buckets,
     lastEvent: last && { type: last.type, time: last.time, toolName: last.toolName } };
 }
 
