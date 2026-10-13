@@ -141,7 +141,7 @@ function renderList() {
     const open = searching || !state.collapsed.has(group.key);
     list.append(el('button', { type: 'button', class: 'group-head', 'aria-expanded': String(open), onclick: () => {
       state.collapsed.has(group.key) ? state.collapsed.delete(group.key) : state.collapsed.add(group.key); store.set('collapsed', [...state.collapsed]); renderList();
-    } }, el('span', { class: 'caret', text: '▾' }), `${group.title}`, el('span', { text: members.length })));
+    } }, el('span', { class: 'chev', text: '▾' }), el('span', { class: `group-dot ${group.key}` }), `${group.title}`, el('span', { text: members.length })));
     if (!open) continue;
     for (const a of members) {
       const row = el('button', { type: 'button', class: `row ${a.status === 'closed' ? 'closed' : ''}`, 'data-agent': a.id, 'aria-current': String(a.id === state.selected),
