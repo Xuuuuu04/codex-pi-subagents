@@ -2,8 +2,8 @@
 export function agentPolicy(input = {}, model) {
   const allowedModels = input.allowedModels || [model];
   if (!Array.isArray(allowedModels) || !allowedModels.length || allowedModels.some(value => !value.provider || !value.model)) throw new Error('allowedModels must name authorized provider/model pairs');
-  const policy = { allowedModels, maxModelRequests: input.maxModelRequests ?? 40, maxTotalTokens: input.maxTotalTokens ?? 200000,
-    maxRuntimeMs: input.maxRuntimeMs ?? 1800000, maxOutputTokens: input.maxOutputTokens ?? 8192, allowNetwork: input.allowNetwork ?? false };
+  const policy = { allowedModels, maxModelRequests: input.maxModelRequests ?? 100000, maxTotalTokens: input.maxTotalTokens ?? 1e12,
+    maxRuntimeMs: input.maxRuntimeMs ?? 604800000, maxOutputTokens: input.maxOutputTokens ?? 128000, allowNetwork: input.allowNetwork ?? false };
   for (const key of ['maxModelRequests', 'maxTotalTokens', 'maxRuntimeMs', 'maxOutputTokens']) if (!Number.isSafeInteger(policy[key]) || policy[key] <= 0) throw new Error(`${key} must be a positive integer`);
   if (typeof policy.allowNetwork !== 'boolean') throw new Error('allowNetwork must be boolean');
   return policy;
