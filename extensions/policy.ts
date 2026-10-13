@@ -2,6 +2,8 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createBashToolDefinition, createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import { fileOperation, runSandboxed } from '../src/tool-sandbox.js';
+import { SpeedMeter } from '../src/speed-meter.js';
+import path from 'node:path';
 
 /** Explicit tools only: filesystem and shell operations execute in OS-restricted subprocesses. */
 export default function (pi: ExtensionAPI) {
@@ -16,7 +18,10 @@ export default function (pi: ExtensionAPI) {
     exec: (command, cwd, options) => runSandboxed({ ...policy, cwd }, '/bin/bash', ['--noprofile', '--norc', '-c', command], { ...options, timeout: Math.min((options.timeout || 60) * 1000, 300000) }),
   } }));
   const tools = ['read', 'write', 'edit', 'bash', 'agent_message', 'ask_parent'];
+  // 实时输出速度写在本代理目录，面板服务读取后推送给页面；只计数，不保存内容。
+  let meter: SpeedMeter | null = null;
   pi.on('session_start', async () => {
+    meter = new SpeedMeter(path.join(path.dirname(process.env.PI_SUBAGENT_POLICY!), 'speed.json'));
     pi.setActiveTools(tools);
     const response = await fetch(process.env.PI_SUBAGENT_ENDPOINT!, { method: 'POST', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.PI_SUBAGENT_TOKEN}` }, body: JSON.stringify({ action: 'policy_ready', agentId: process.env.PI_SUBAGENT_ID }) });
     if (!response.ok) process.exit(77);
@@ -39,7 +44,11 @@ export default function (pi: ExtensionAPI) {
         payload.model = payload.model.slice(0, -'-fast'.length);
         payload.service_tier = 'priority';
       }
+      meter?.start();
       return payload;
     } catch { process.exit(77); } // Pi catches hook exceptions; exiting is required to block an unapproved provider request.
   });
+  pi.on('provider_stream_event', event => { meter?.event(event.data); });
+  pi.on('message_end', event => { if (event.message?.role === 'assistant') meter?.finish(event.message.usage); });
+  pi.on('session_shutdown', () => { meter?.close(); });
 }

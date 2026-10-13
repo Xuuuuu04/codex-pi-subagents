@@ -8,6 +8,22 @@ import { DashboardData } from './dashboard-data.js';
 export const defaultDashboardPort = 3141;
 const assets = fileURLToPath(new URL('../dashboard/', import.meta.url));
 
+/** Push the agent's speed file to the page as soon as it changes (checked every 100 ms), instead of the page polling. */
+function streamSpeed(file, request, response) {
+  response.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-content-type-options': 'nosniff', connection: 'keep-alive' });
+  let last = 0;
+  const push = () => {
+    try {
+      const changed = fs.statSync(file).mtimeMs;
+      if (changed === last) return;
+      last = changed; response.write(`data: ${fs.readFileSync(file, 'utf8')}\n\n`);
+    } catch {} // No meter yet: older agents keep the polled estimate.
+  };
+  push();
+  const timer = setInterval(push, 100); const ping = setInterval(() => response.write(': ping\n\n'), 15000);
+  request.on('close', () => { clearInterval(timer); clearInterval(ping); });
+}
+
 /** Private loopback HTTP viewer. All agent operations remain with the owning Codex connection. */
 export async function startDashboard({ root, port = defaultDashboardPort, token = randomBytes(32).toString('hex') }) {
   const data = new DashboardData(root);
@@ -38,6 +54,8 @@ export async function startDashboard({ root, port = defaultDashboardPort, token 
       if (!valid(cookie) && !valid((request.headers.authorization || '').replace(/^Bearer /, ''))) { send(401, { error: '查看会话已过期，请刷新面板页面。' }); return; }
       if (url.pathname === '/api/health') { send(200, { service: 'pi-dashboard', pid: process.pid }); return; }
       if (url.pathname === '/api/agents') { send(200, data.list()); return; }
+      const stream = /^\/api\/agents\/([^/]+)\/speed$/.exec(url.pathname);
+      if (stream) { streamSpeed(path.join(data.directory(stream[1]), 'speed.json'), request, response); return; }
       const match = /^\/api\/agents\/([^/]+)$/.exec(url.pathname);
       if (match) { send(200, data.detail(match[1])); return; }
       send(404, { error: 'Not found' });

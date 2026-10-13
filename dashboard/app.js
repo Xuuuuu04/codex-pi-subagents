@@ -367,24 +367,49 @@ function speedChart(speeds) {
   chart.append(svg('line', { x1: 0, x2: width, y1: height - average / top * (height - 4), y2: height - average / top * (height - 4), class: 'avg' }));
   return chart;
 }
-function renderSpeed(data) {
-  const live = sampleLive(data); const speeds = data.speeds || []; const latest = speeds.at(-1);
-  const streaming = live !== null && working.has(data.agent.status);
-  const value = streaming ? live : latest?.tps;
-  const average = speeds.length ? speeds.reduce((sum, item) => sum + item.output, 0) / speeds.reduce((sum, item) => sum + item.seconds, 0) : 0;
-  const peak = speeds.length ? Math.max(...speeds.map(item => item.tps)) : 0;
-  const caption = streaming ? (live ? '正在生成 · 按可见文字实时估算' : '正在思考 · 暂无可见输出') : latest ? `最近一次请求 · ${latest.output} token / ${latest.seconds} 秒` : '还没有完成的请求';
-  $('#p-speed').replaceChildren(
-    el('div', { class: `speed-now ${streaming ? 'live' : ''}` }, el('b', { text: value == null ? '—' : value >= 100 ? Math.round(value) : value.toFixed(1) }), el('span', { text: 'tok/s' }), streaming ? el('i', { class: 'pulse' }) : null),
-    el('div', { class: 'sub', text: caption }),
-    speedChart(speeds.slice(-30)),
-    el('dl', { class: 'speed-figures' },
-      el('div', {}, el('dt', { text: '平均' }), el('dd', { text: speeds.length ? `${average.toFixed(1)}` : '—' })),
-      el('div', {}, el('dt', { text: '最高' }), el('dd', { text: speeds.length ? `${peak}` : '—' })),
-      el('div', {}, el('dt', { text: '请求' }), el('dd', { text: String(speeds.length) }))),
-    el('p', { class: 'speed-note', text: '柱子是最近每次请求的实测输出速度（含首字等待），横线是平均值。' }));
+// 新启动的子代理带速度计：服务端在速度文件变化时立刻推送，这里逐帧重画；旧子代理继续用上面的估算。
+const meterState = { id: '', source: null, data: null };
+function subscribeSpeed(id) {
+  if (meterState.id === id) return;
+  meterState.source?.close(); Object.assign(meterState, { id, source: null, data: null });
+  if (!id || typeof EventSource === 'undefined') return;
+  const source = new EventSource(`/api/agents/${id}/speed`, { withCredentials: true });
+  source.onmessage = event => { try { meterState.data = JSON.parse(event.data); if (state.detail?.agent.id === id) drawSpeed(); } catch {} };
+  meterState.source = source;
 }
-
+function liveChart(series) {
+  const width = 280, height = 46, chart = svg('svg', { viewBox: `0 0 ${width} ${height}`, class: 'speed-live', role: 'img', 'aria-label': '最近一分钟的实时速度' });
+  const now = Date.now(); const points = series.filter(([time]) => now - time <= 60000);
+  if (points.length < 2) return chart;
+  const top = Math.max(20, ...points.map(([, rate]) => rate)) * 1.15;
+  const xy = points.map(([time, rate]) => `${(width - (now - time) / 60000 * width).toFixed(1)},${(height - rate / top * (height - 2)).toFixed(1)}`);
+  chart.append(svg('polygon', { points: `${xy[0].split(',')[0]},${height} ${xy.join(' ')} ${xy.at(-1).split(',')[0]},${height}`, class: 'area' }), svg('polyline', { points: xy.join(' '), class: 'line' }));
+  return chart;
+}
+function renderSpeed(data) { state.speedDetail = data; subscribeSpeed(data.agent.id); if (!meterState.data) sampleLive(data); drawSpeed(); }
+function drawSpeed() {
+  const data = state.speedDetail; if (!data) return;
+  const meter = meterState.data && meterState.id === data.agent.id ? meterState.data : null;
+  const request = working.has(data.agent.status) ? meter?.request : null;
+  const history = meter?.history?.length ? meter.history : data.speeds || [];
+  const latest = history.at(-1); let value, caption, live = false;
+  if (request?.phase === 'output') { value = meter.rate; live = true; caption = `正在生成 · 本次已输出约 ${request.tokens} token`; }
+  else if (request) { value = null; live = true; caption = `${request.phase === 'thinking' ? '正在思考（推理 token 不公开，结束后补上）' : '等待首个 token'} · ${shortDuration(Date.now() - ms(request.startedAt))}`; }
+  else if (!meter && working.has(data.agent.status) && data.live?.message) { value = speedState.rate; live = true; caption = '正在生成 · 按可见文字估算（此会话启动早于实时速度计）'; }
+  else { value = latest?.tps; caption = latest ? `最近一次 · ${latest.output} token / ${latest.seconds} 秒${latest.streamTps ? ` · 纯生成 ${latest.streamTps} tok/s` : ''}${latest.waitSeconds != null ? ` · 首字等待 ${latest.waitSeconds} 秒` : ''}` : '还没有完成的请求'; }
+  const average = history.length ? history.reduce((sum, item) => sum + item.output, 0) / history.reduce((sum, item) => sum + item.seconds, 0) : 0;
+  const peak = history.length ? Math.max(...history.map(item => item.tps)) : 0;
+  $('#p-speed').replaceChildren(...[
+    el('div', { class: `speed-now ${live ? 'streaming' : ''}` }, el('b', { text: value == null ? '—' : value >= 100 ? Math.round(value) : value.toFixed(1) }), el('span', { text: 'tok/s' }), live ? el('i', { class: 'pulse' }) : null),
+    el('div', { class: 'sub', text: caption }),
+    meter ? liveChart(meter.series || []) : null,
+    speedChart(history.slice(-30)),
+    el('dl', { class: 'speed-figures' },
+      el('div', {}, el('dt', { text: '平均' }), el('dd', { text: history.length ? average.toFixed(1) : '—' })),
+      el('div', {}, el('dt', { text: '最高' }), el('dd', { text: history.length ? String(peak) : '—' })),
+      el('div', {}, el('dt', { text: '请求' }), el('dd', { text: String(history.length) }))),
+    el('p', { class: 'speed-note', text: meter ? '上方曲线是最近一分钟的实时速度（每个流事件计数，变化时立即推送）；柱子是每次请求按模型上报 token 数算出的实测速度，横线是平均值。' : '柱子是最近每次请求的实测输出速度（含首字等待），横线是平均值。' })].filter(Boolean));
+}
 async function refreshDetail() {
   if (!state.selected || state.detailFetching) return; state.detailFetching = true;
   let data; const requested = state.selected;
@@ -421,6 +446,7 @@ async function refresh() {
   finally { state.fetching = false; }
 }
 function tick() {
+  if (meterState.data?.request) drawSpeed();
   for (const node of document.querySelectorAll('[data-ago]')) node.textContent = ago(node.dataset.ago);
   for (const node of document.querySelectorAll('[data-since]')) node.textContent = shortDuration(Date.now() - Number(node.dataset.since));
   for (const node of document.querySelectorAll('[data-run-start]')) node.textContent = `正在工作 ${longDuration(Date.now() - Number(node.dataset.runStart))}`;
