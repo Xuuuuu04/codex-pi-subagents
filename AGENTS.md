@@ -22,6 +22,7 @@
 - `src/task-store.js`、`src/mcp-*.js`：标准 Tasks、资源、日志和进度通知。
 - `src/manager.js`：Pi 会话、模型、生命周期和等待。
 - `src/rpc-client.js`：Pi 子进程 JSONL 命令与事件。
+- `src/wait-reminder.js`：启动/派任务返回里的 `mustWait` 和 `wait_agent` 返回里的 `pending/asking/reminder`，防止主会话忘记等待。
 - `src/messages.js`：本机消息接收、问题等待与答复。
 - `src/storage.js`：私密状态和事件保存。
 - `src/workspace.js`：文件范围、独立 Git 工作目录。

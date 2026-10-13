@@ -90,6 +90,8 @@ npm run install:all      # 或 install:codex / install:claude
 
 `send_message` 的 `steer` 在当前模型回答和工具执行结束后的合适位置接收；`follow_up` 等当前工作完成再接收。`ask_parent` 正在等待时必须调用 `reply_question`；普通消息不会替代问题答复。
 
+**不要忘记等待**：`spawn_agent`、`send_message` 的返回里有 `mustWait` 提醒，`wait_agent` 的返回里有 `pending`（仍在工作）、`asking`（等待答复）和 `reminder`。主会话结束本轮回答后，MCP 无法再唤醒它，所以启动子代理后必须一直等到 completed、failed、interrupted 或 closed，确实要提前结束时要明确告诉用户子代理还在后台。Claude Code 还应把 `mustWait.claudeCode` 里给出的命令作为后台命令运行，事件到达会唤醒它。
+
 每次 `wait_agent` 返回后，把各代理的 `nextSequence` 放入下一次的 `after[agentId]`，避免重复读取。工具执行进度也会使等待返回；继续检查 `status`，不要把一次工具返回当成开发包完成。
 
 子代理拥有 `agent_message(recipient, message)` 和 `ask_parent(question)`。`recipient` 可为 `parent`，或父代理提供的兄弟代理身份。兄弟消息成为对方的新指令；父代理消息进入可读取的事件记录。
