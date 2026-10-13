@@ -319,3 +319,11 @@ td.bad, tr.err td:first-child code { color: var(--fail); }
 .speed-live { width: 100%; height: 46px; display: block; margin-top: 10px; }
 .speed-live .line { fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-linejoin: round; }
 .speed-live .area { fill: color-mix(in srgb, var(--accent) 14%, transparent); }
+.row-wrap { position: relative; }
+.row-actions { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); display: none; gap: 4px; padding-left: 14px; background: linear-gradient(90deg, transparent, var(--hover) 14px); }
+.row-wrap:hover .row-actions, .row-wrap:focus-within .row-actions { display: flex; }
+.row-wrap:hover .ago, .row-wrap:focus-within .ago { visibility: hidden; }
+.row-actions .mark { border: 1px solid var(--line-soft); background: var(--bg, #fff); color: var(--ink-2); border-radius: 6px; padding: 1px 7px; font-size: 11.5px; }
+.row-actions .mark:hover { color: var(--ink); border-color: var(--muted); }
+.proj-name { flex: 0 1 auto; } .proj-head { gap: 6px; }
+.proj-tag { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; font-weight: 400; color: var(--muted); }

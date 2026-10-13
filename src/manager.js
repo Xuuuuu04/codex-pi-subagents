@@ -98,7 +98,7 @@ export class Manager extends EventEmitter {
     record.owner = this.owner; record.ownerPid = process.pid;
     return lock;
   }
-  async spawn({ cwd, prompt, provider, model, name, ownedPaths, workspaceMode = 'auto', baseRef, thinking = 'high', context = '', parentId, policy }) {
+  async spawn({ cwd, prompt, provider, model, name, ownedPaths, workspaceMode = 'auto', baseRef, thinking = 'high', context = '', parentId, parentInfo, policy }) {
     if (!path.isAbsolute(cwd)) throw new Error('cwd must be an absolute directory path');
     this.capacity(); await this.validateModel({ provider, model }); this.capacity();
     const paths = validateOwnedPaths(ownedPaths);
@@ -113,7 +113,7 @@ export class Manager extends EventEmitter {
       if (pathsOverlap(paths.map(p => canonicalPath(path.resolve(original, p))), saved.ownedPaths.map(p => canonicalPath(path.resolve(saved.workspace.cwd, p))))) throw new Error('Owned paths overlap a live agent from an earlier controller');
     }
     const id = randomUUID();
-    const record = { id, parentId, policy: agentPolicy(policy, { provider, model }), modelRequests: 0, name: name || id.slice(0, 8), model: { provider, model }, thinking, ownedPaths: paths, context,
+    const record = { id, parentId, parentInfo, policy: agentPolicy(policy, { provider, model }), modelRequests: 0, name: name || id.slice(0, 8), model: { provider, model }, thinking, ownedPaths: paths, context,
       status: 'starting', sequence: 0, questionIds: [], createdAt: new Date().toISOString(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reportedCost: 0 } };
     const lock = this.claim(record);
     try {

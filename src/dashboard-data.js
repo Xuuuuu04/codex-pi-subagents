@@ -89,6 +89,19 @@ export class DashboardData {
     if (!isAgentId(id)) throw new Error('Invalid agent ID');
     return path.join(this.root, id);
   }
+  get marksFile() { return path.join(this.root, 'dashboard-marks.json'); }
+  marks() { try { return JSON.parse(fs.readFileSync(this.marksFile, 'utf8')); } catch { return {}; } }
+  /** 手动把会话在面板里标记为已结束或已关闭；status 为 null 时取消标记。只写面板自己的文件。 */
+  mark(id, status) {
+    this.directory(id);
+    if (status !== null && !['completed', 'closed'].includes(status)) throw new Error('Mark must be completed, closed or null');
+    const current = this.snapshot(id).status;
+    if (['starting', 'running', 'finishing'].includes(current) && !this.marks()[id]) throw new Error('正在工作的会话不能手动标记');
+    const marks = this.marks(); if (status === null) delete marks[id]; else marks[id] = { status, at: new Date().toISOString() };
+    const temporary = `${this.marksFile}.tmp`; fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
+    fs.writeFileSync(temporary, JSON.stringify(marks), { mode: 0o600 }); fs.renameSync(temporary, this.marksFile);
+    return { id, status: this.snapshot(id).status, marked: status !== null };
+  }
   snapshot(id) {
     const directory = this.directory(id);
     const record = JSON.parse(fs.readFileSync(path.join(directory, 'agent.json'), 'utf8'));
@@ -104,10 +117,13 @@ export class DashboardData {
       if (event.type === 'tool_execution_start') pending.set(event.toolCallId, event.toolName);
       if (event.type === 'tool_execution_end') pending.delete(event.toolCallId);
     }
-    const status = !controllerAlive && active.has(record.status) ? 'disconnected' : record.status;
+    let status = !controllerAlive && active.has(record.status) ? 'disconnected' : record.status;
+    // 手动标记只改变面板显示，不碰代理进程；正在跑的代理不允许标记。
+    const mark = this.marks()[id]; const marked = !!mark && (record.updatedAt || '') <= mark.at && !['starting', 'running', 'finishing'].includes(status);
+    if (marked) status = mark.status;
     const questionIds = new Set(record.questionIds || []);
     const activity = summarizeActivity(events);
-    return { id, name: record.name, status, recordedStatus: record.status, controllerAlive,
+    return { id, name: record.name, status, recordedStatus: record.status, controllerAlive, marked, parentId: record.parentId, parentInfo: record.parentInfo,
       model: record.model, thinking: record.thinking, temporaryModel: record.restoreModel,
       cwd: record.workspace?.cwd, sourceCwd: record.workspace?.sourceCwd, workspaceMode: record.workspace?.mode,
       ownedPaths: record.ownedPaths, createdAt: record.createdAt, updatedAt: record.updatedAt,

@@ -8,6 +8,11 @@ import { fileURLToPath } from 'node:url';
 import { defaultMaxAgents } from './manager.js';
 
 const script = fileURLToPath(new URL('./controller.js', import.meta.url));
+/** 当前桥接进程所属的父会话：Codex 用 CODEX_THREAD_ID，Claude Code 用 CLAUDE_CODE_SESSION_ID（桌面端另有 host 会话编号）。 */
+export function parentIdentity(env = process.env) {
+  const kind = env.CODEX_THREAD_ID ? 'codex' : env.CLAUDE_CODE_SESSION_ID ? 'claude' : 'unknown';
+  return { kind, sessionId: env.CODEX_THREAD_ID || env.CLAUDE_CODE_SESSION_ID, hostSessionId: env.CLAUDE_CODE_HOST_SESSION_ID, cwd: process.cwd() };
+}
 /** Private Unix-socket bridge. Closing an MCP bridge detaches its parent without stopping Pi. */
 export class ControllerClient extends EventEmitter {
   constructor(root, info, parentId = randomUUID()) { super(); this.storage = { root }; this.info = info; this.parentId = parentId; this.closed = false; }
@@ -20,7 +25,7 @@ export class ControllerClient extends EventEmitter {
       const latest = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
       if (!latest || latest.socket === this.info.socket) throw error;
       this.info = latest;
-      await this.request('attach', { pid: process.pid });
+      await this.request('attach', { pid: process.pid, parent: parentIdentity() });
       return this.request(method, values, signal);
     }
   }
@@ -86,5 +91,5 @@ export async function connectController({ root, executable = 'pi', maxAgents = d
     if (!info) throw new Error('Independent Pi controller failed to start; inspect controller.log.');
   }
   const client = new ControllerClient(root, info);
-  await client.call('attach', { pid: process.pid }); return client;
+  await client.call('attach', { pid: process.pid, parent: parentIdentity() }); return client;
 }

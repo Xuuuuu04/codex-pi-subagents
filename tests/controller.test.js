@@ -14,3 +14,10 @@ test('independent controller survives detach, preserves questions and isolates p
  await third.close();process.kill(third.info.pid,'SIGTERM');for(let i=0;i<50&&fs.existsSync(root+'/controller.lock');i++)await pause(50);
  const fourth=await connectController({root,executable});clients.push(fourth);assert.notEqual(fourth.info.pid,third.info.pid);assert.equal((await fourth.resume(a.id)).status,'idle');assert.equal((await fourth.read(a.id)).agent.lastText,'one');assert.equal((await fourth.call('readMessages',{agentId:a.id})).messages.filter(v=>v.messageId===id).length,1);
 });
+
+test('bridge reports which parent session it belongs to, from the client environment', async () => {
+  const { parentIdentity } = await import('../src/controller-client.js');
+  assert.deepEqual(parentIdentity({ CLAUDE_CODE_SESSION_ID: 'abc', CLAUDE_CODE_HOST_SESSION_ID: 'local_abc' }), { kind: 'claude', sessionId: 'abc', hostSessionId: 'local_abc', cwd: process.cwd() });
+  assert.equal(parentIdentity({ CODEX_THREAD_ID: 'thread-1', CLAUDE_CODE_SESSION_ID: 'abc' }).kind, 'codex');
+  assert.equal(parentIdentity({}).kind, 'unknown');
+});

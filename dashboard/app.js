@@ -132,23 +132,62 @@ function renderChips() {
   for (const f of filters) chips.append(el('button', { type: 'button', 'aria-pressed': String(state.filter === f.key), onclick: () => { state.filter = f.key; store.set('filter', f.key); renderChips(); renderList(); } },
     f.title, el('span', { text: state.agents.filter(a => f.match(a.status)).length })));
 }
-const projectOf = a => a.sourceCwd || a.cwd || '未知目录';
-/** 目录名作标题；家目录显示为 ~，同名目录靠悬停提示看完整路径。 */
-const projectLabel = path => path === '未知目录' ? path : path.replace(/\/+$/, '').split('/').pop() || '/';
+const commonDir = paths => {
+  const parts = paths.map(p => p.split('/')); let n = parts[0].length;
+  for (const p of parts) { let i = 0; while (i < n && i < p.length && p[i] === parts[0][i]) i++; n = i; }
+  return parts[0].slice(0, n).join('/') || '/';
+};
+/** 每个父会话所在的目录：新代理记录了真实目录；旧代理没有记录，取它们工作目录的最近共同上级作为推断。 */
+const kindNames = { claude: 'Claude', codex: 'Codex' };
+/** 父会话分组：新代理记录了真实身份（客户端、会话编号、所在目录）；旧代理没有，只能按 parentId 分开，并用它们工作目录的共同上级推断目录。 */
+function parentGroups(agents) {
+  const byParent = new Map();
+  for (const a of agents) { const id = a.parentId || ''; (byParent.get(id) || byParent.set(id, []).get(id)).push(a); }
+  return new Map([...byParent].map(([id, list]) => {
+    const known = list.find(a => a.parentInfo)?.parentInfo; const dirs = list.map(a => a.sourceCwd || a.cwd).filter(Boolean);
+    if (known?.sessionId) return [id, { key: `s:${known.sessionId}`, cwd: known.cwd, tag: `${kindNames[known.kind] || '会话'} ${known.sessionId.slice(0, 8)}`, detail: `${kindNames[known.kind] || '父'}会话 ${known.sessionId}` }];
+    return [id, { key: `p:${id || '未知'}`, cwd: known?.cwd || (dirs.length ? commonDir(dirs) : ''), inferred: !known?.cwd, tag: id ? `旧代理 ${id.slice(0, 6)}` : '', detail: '旧代理没有记录父会话身份，目录根据代理工作目录推断' }];
+  }));
+}
+/** Claude Code 的临时工作目录形如 /private/tmp/claude-501/<项目>/<会话>/scratchpad/...，目录名没有意义，改显示会话编号。 */
+function directoryName(path) {
+  const scratch = /^\/private\/tmp\/claude-\d+\/[^/]+\/([0-9a-f]{8})[0-9a-f-]*(\/|$)/.exec(path);
+  return scratch ? `Claude 会话 ${scratch[1]}` : path.replace(/\/+$/, '').split('/').pop() || '/';
+}
+async function markAgent(id, status) {
+  try {
+    const response = await fetch(`/api/agents/${id}/mark`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-pi-dashboard': '1' }, body: JSON.stringify({ status }) });
+    if (!response.ok) throw new Error((await response.json()).error || '标记失败');
+    await refresh();
+  } catch (error) { showError(error.message); }
+}
+/** 手动标记只改变面板显示，不会停止进程；正在工作的会话没有这些按钮。 */
+function markButtons(a) {
+  if (working.has(a.status) && a.status !== 'waiting') return null;
+  const button = (text, title, status) => el('button', { type: 'button', class: 'mark', title, onclick: event => { event.stopPropagation(); markAgent(a.id, status); } }, text);
+  return el('span', { class: 'row-actions' },
+    a.status !== 'completed' ? button('结束', '标记为已结束（只改变面板显示）', 'completed') : null,
+    a.status !== 'closed' ? button('关闭', '标记为已关闭（只改变面板显示）', 'closed') : null,
+    a.marked ? button('还原', '取消手动标记', null) : null);
+}
 function renderList() {
   const focused = document.activeElement?.dataset?.agent;
   const list = $('#list'); const scroll = list.scrollTop; list.replaceChildren();
   const visible = visibleAgents(); const searching = $('#search').value.trim() || state.filter !== 'all';
   const toggle = key => { state.collapsed.has(key) ? state.collapsed.delete(key) : state.collapsed.add(key); store.set('collapsed', [...state.collapsed]); renderList(); };
-  // 第一层按管理目录（代理所属的项目目录）组织，最近有动静的目录排在前面；第二层仍是状态分组。
-  const projects = new Map();
-  for (const a of visible) { const key = projectOf(a); (projects.get(key) || projects.set(key, []).get(key)).push(a); }
-  const ordered = [...projects].sort((x, y) => Math.max(...y[1].map(a => ms(a.updatedAt) || 0)) - Math.max(...x[1].map(a => ms(a.updatedAt) || 0)));
-  for (const [project, agents] of ordered) {
+  // 第一层按父会话（Codex / Claude Code）所在目录组织，最近有动静的排在前面；第二层仍是状态分组。
+  const parents = parentGroups(state.agents); const projects = new Map();
+  for (const a of visible) {
+    const info = parents.get(a.parentId || '');
+    (projects.get(info.key) || projects.set(info.key, { info, agents: [] }).get(info.key)).agents.push(a);
+  }
+  const latest = group => Math.max(...group.agents.map(a => ms(a.updatedAt) || 0));
+  const ordered = [...projects].sort((x, y) => latest(y[1]) - latest(x[1]));
+  for (const [project, { agents, info }] of ordered) {
     const projectKey = `p:${project}`; const projectOpen = searching || !state.collapsed.has(projectKey);
     const busy = agents.filter(a => groups[1].match(a.status)).length, needs = agents.filter(a => groups[0].match(a.status)).length;
-    list.append(el('button', { type: 'button', class: 'proj-head', 'aria-expanded': String(projectOpen), title: project, onclick: () => toggle(projectKey) },
-      el('span', { class: 'chev', text: '▾' }), el('span', { class: 'proj-name', text: projectLabel(project) }),
+        list.append(el('button', { type: 'button', class: 'proj-head', 'aria-expanded': String(projectOpen), title: `${info.detail}\n目录：${info.cwd || '未知'}${info.inferred ? '（推断）' : ''}`, onclick: () => toggle(projectKey) },
+      el('span', { class: 'chev', text: '▾' }), el('span', { class: 'proj-name', text: info.cwd ? directoryName(info.cwd) : '未知父会话' }), info.tag ? el('span', { class: 'proj-tag', text: info.tag }) : null,
       needs ? el('span', { class: 'proj-flag fail', title: '需要处理', text: String(needs) }) : null, busy ? el('span', { class: 'proj-flag run', title: '正在工作', text: String(busy) }) : null,
       el('span', { class: 'proj-count', text: agents.length })));
     if (!projectOpen) continue;
@@ -162,7 +201,7 @@ function renderList() {
       const row = el('button', { type: 'button', class: `row ${a.status === 'closed' ? 'closed' : ''}`, 'data-agent': a.id, 'aria-current': String(a.id === state.selected),
         title: `${a.name}\n${modelName(a)} · ${labels[a.status] || a.status}`, onclick: () => select(a.id) },
         el('span', { class: 'name', text: a.name || a.id.slice(0, 8) }), el('span', { class: 'ago', 'data-ago': a.updatedAt, text: ago(a.updatedAt) }), el('span', { class: 'ind' }, indicator(a)));
-      list.append(row);
+      list.append(el('div', { class: 'row-wrap' }, row, markButtons(a)));
       if (focused === a.id) row.focus({ preventScroll: true });
     }
   }

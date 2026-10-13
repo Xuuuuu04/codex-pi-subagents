@@ -58,7 +58,12 @@ async function once(parentId, key, values, operation) {
 }
 async function dispatch(parentId, method, v) {
   if (method === 'health') return { service: 'pi-controller', pid: process.pid };
-  if (method === 'attach') { parents.set(parentId, { connected: true, pid: v.pid, lastSeen: Date.now() }); return { parentId }; }
+  // 父会话身份（客户端类型、会话编号、所在目录）由桥接进程自报，只用于面板分组显示，不参与任何权限判断。
+  if (method === 'attach') {
+    const parent = v.parent && typeof v.parent === 'object' ? v.parent : {};
+    const identity = Object.fromEntries(['kind', 'sessionId', 'hostSessionId', 'cwd'].filter(key => typeof parent[key] === 'string' && parent[key].length <= 500 && (key !== 'cwd' || path.isAbsolute(parent[key]))).map(key => [key, parent[key]]));
+    parents.set(parentId, { connected: true, pid: v.pid, identity: Object.keys(identity).length ? identity : parents.get(parentId)?.identity, lastSeen: Date.now() }); return { parentId };
+  }
   if (method === 'detach') { parents.set(parentId, { connected: false, lastSeen: Date.now() }); return { detached: true }; }
   const parent = parents.get(parentId); if (!parent?.connected) throw new Error('Parent is not attached'); parent.lastSeen = Date.now();
   const owned = () => [...manager.agents.values()].filter(value => value.record.parentId === parentId);
@@ -71,12 +76,12 @@ async function dispatch(parentId, method, v) {
   if (method === 'adoptTask') {
     const value = await tasks.adopt(v.taskId, parentId, id => parents.get(id)?.connected && processAlive(parents.get(id).pid));
     const agent = manager.agents.get(value.agentId);
-    if (agent) { agent.record.parentId = parentId; manager.storage.save(agent.record); }
+    if (agent) { agent.record.parentId = parentId; agent.record.parentInfo = parents.get(parentId)?.identity; manager.storage.save(agent.record); }
     return value;
   }
   if (method === 'models') return manager.models(v.provider);
   if (method === 'spawn') return once(parentId, v.requestId, { method, ...v }, async () => {
-    const result = await manager.spawn({ ...v, parentId }); return result;
+    const result = await manager.spawn({ ...v, parentId, parentInfo: parents.get(parentId)?.identity }); return result;
   });
   if (method === 'list') {
     const all = manager.list(v.includeSaved);
@@ -85,8 +90,8 @@ async function dispatch(parentId, method, v) {
   if (method === 'resume') {
     const current = manager.agents.get(v.agentId);
     if (current && current.record.parentId !== parentId && parents.get(current.record.parentId)?.connected && processAlive(parents.get(current.record.parentId).pid)) throw new Error('Agent belongs to an attached parent');
-    if (current?.rpc && !current.rpc.exited) { current.record.parentId = parentId; manager.storage.save(current.record); return { ...manager.summary(current), reattached: true }; }
-    const result = await manager.resume(v.agentId); const agent = manager.get(v.agentId); agent.record.parentId = parentId; manager.storage.save(agent.record); return result;
+    if (current?.rpc && !current.rpc.exited) { current.record.parentId = parentId; current.record.parentInfo = parents.get(parentId)?.identity; manager.storage.save(current.record); return { ...manager.summary(current), reattached: true }; }
+    const result = await manager.resume(v.agentId); const agent = manager.get(v.agentId); agent.record.parentId = parentId; agent.record.parentInfo = parents.get(parentId)?.identity; manager.storage.save(agent.record); return result;
   }
   if (method === 'poll') {
     const ids = owned().map(value => value.record.id);

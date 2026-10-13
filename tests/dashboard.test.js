@@ -105,3 +105,17 @@ test('live stream mirrors streaming thinking, text and tool output, then clears 
   live.handle({ type: 'tool_execution_end', toolCallId: 'c1' });
   assert.equal(await read(), null);
 });
+
+test('dashboard marks stay in the dashboard: they relabel idle sessions, can be undone, and never apply to working ones', async t => {
+  const { manager, cwd } = await setup(t);
+  const a = await spawn(manager, cwd); await settled(manager, a.id);
+  const data = new DashboardData(manager.storage.root);
+  assert.equal(data.list().agents[0].status, 'completed');
+  assert.deepEqual(data.mark(a.id, 'closed'), { id: a.id, status: 'closed', marked: true });
+  assert.equal(data.list().agents[0].status, 'closed'); assert.equal(data.list().agents[0].recordedStatus, 'completed');
+  assert.throws(() => data.mark(a.id, 'running'), /completed, closed or null/);
+  assert.equal(data.mark(a.id, null).marked, false); assert.equal(data.list().agents[0].status, 'completed');
+  data.mark(a.id, 'closed');
+  const record = manager.storage.load(a.id); record.status = 'running'; record.updatedAt = new Date(Date.now() + 5000).toISOString(); manager.storage.save(record);
+  assert.notEqual(data.snapshot(a.id).status, 'closed');
+});
