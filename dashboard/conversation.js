@@ -5,7 +5,8 @@ const icons = {
   shell: 'M4 6l5 5-5 5M11 17h8', file: 'M7 3h7l4 4v14H7zM14 3v4h4', edit: 'M4 20h4L19 9l-4-4L4 16zM13 7l4 4',
   search: 'M11 4a7 7 0 1 1 0 14 7 7 0 0 1 0-14zM16 16l4 4', think: 'M9 18h6M10 21h4M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3z',
   tool: 'M14 6a4 4 0 0 0 5 5l-8 8-3-3 8-8a4 4 0 0 0-2-2zM5 19l-1 1', message: 'M4 5h16v11H8l-4 4z', ask: 'M9 9a3 3 0 1 1 4 2.8c-.7.3-1 .9-1 1.7V14M12 17.5v.5',
-  files: 'M5 4h9l5 5v11H5zM9 13h6M12 10v6',
+  files: 'M5 4h9l5 5v11H5zM9 13h6M12 10v6', skill: 'M12 3l1.8 4.7L18.5 9.5l-4.7 1.8L12 16l-1.8-4.7L5.5 9.5l4.7-1.8zM18 15l.8 2.2 2.2.8-2.2.8L18 21l-.8-2.2-2.2-.8 2.2-.8z',
+  guide: 'M5 4.5A1.5 1.5 0 0 1 6.5 3H19v15H6.5A1.5 1.5 0 0 0 5 19.5zM5 19.5A1.5 1.5 0 0 0 6.5 21H19M9 7h6M9 10.5h4', pr: 'M6 4v16M18 20V9a3 3 0 0 0-3-3h-4M13 4l-2 2 2 2',
 };
 function icon(name, cls = 'ico') { const box = svg('svg', { class: cls, viewBox: '0 0 24 24', 'aria-hidden': 'true' }); box.append(svg('path', { d: icons[name] || icons.tool })); return box; }
 
@@ -43,8 +44,17 @@ function markdown(source) {
 const parsePath = args => args.path ?? args.file_path ?? args.filePath ?? '';
 function describe(call, running) {
   const a = call.arguments || {}; const name = call.name;
-  if (name === 'bash') return { icon: 'shell', verb: running ? '正在运行命令' : '运行了命令', target: String(a.command || '').split('\n')[0] };
-  if (name === 'read') return { icon: 'file', verb: running ? '正在读取' : '读取了', target: parsePath(a) };
+  if (name === 'bash') {
+    const command = String(a.command || '');
+    if (/\bgh pr (create|merge|view|checks)\b/.test(command)) return { icon: 'pr', verb: running ? '正在处理 PR' : /gh pr create/.test(command) ? '创建了 PR' : /gh pr merge/.test(command) ? '合并了 PR' : '查看了 PR', target: command.split('\n')[0] };
+    return { icon: 'shell', verb: running ? '正在运行命令' : '运行了命令', target: command.split('\n')[0] };
+  }
+  if (name === 'read') {
+    const file = parsePath(a); const skill = /([^/]+)\/SKILL\.md$/i.exec(file);
+    if (skill) return { icon: 'skill', verb: running ? '正在加载技能' : '使用技能', target: skill[1], kind: 'skill' };
+    if (/(^|\/)(AGENTS|CLAUDE)\.md$/i.test(file)) return { icon: 'guide', verb: running ? '正在读取项目说明' : '读取了项目说明', target: file.split('/').slice(-2).join('/'), kind: 'guide' };
+    return { icon: 'file', verb: running ? '正在读取' : '读取了', target: file };
+  }
   if (name === 'edit') return { icon: 'edit', verb: running ? '正在编辑' : '编辑了', target: parsePath(a) };
   if (name === 'write') return { icon: 'edit', verb: running ? '正在写入' : '写入了', target: parsePath(a) };
   if (name === 'grep' || name === 'find') return { icon: 'search', verb: running ? '正在搜索' : '搜索了', target: a.pattern || a.query || parsePath(a) };
@@ -98,8 +108,8 @@ function toolItem(call, result, ctx) {
     result.isError ? el('span', { class: 'bad', text: '失败' }) : stats ? el('span', { class: 'stat' }, el('b', { class: 'plus', text: `+${stats.add}` }), el('b', { class: 'minus', text: `-${stats.del}` })) :
     result.durationMs != null ? el('span', { class: 'muted', text: shortDuration(result.durationMs) }) : null;
   const key = `${ctx.agentId}:tool:${call.id}`;
-  const node = el('details', { class: `tool-item ${running ? 'running' : ''} ${result?.isError ? 'error' : ''}`, 'data-key': key },
-    el('summary', {}, icon(d.icon), el('span', { class: 'verb', text: d.verb }), d.target ? el('code', { class: 'target', text: d.target }) : null, status),
+  const node = el('details', { class: `tool-item ${d.kind || ''} ${running ? 'running' : ''} ${result?.isError ? 'error' : ''}`, 'data-key': key },
+    el('summary', {}, d.kind ? null : icon(d.icon), el('span', { class: 'verb', text: d.verb }), d.kind ? el('span', { class: `skill-chip ${d.kind}`, title: parsePath(call.arguments || {}) }, icon(d.icon), d.target) : d.target ? el('code', { class: 'target', text: d.target }) : null, status),
     toolWindow(call, result, liveOutput));
   node.open = ctx.expanded.get(key) ?? (running && liveOutput != null);
   return node;

@@ -74,7 +74,12 @@ export class Manager extends EventEmitter {
     if (!this.catalog) {
       this.catalog = (async () => {
         const rpc = this.processFactory({ executable: this.executable, args: ['--mode', 'rpc', '--no-session', '--offline', '--no-extensions'], cwd: this.storage.root });
-        try { return (await rpc.command('get_available_models')).models; }
+        try {
+          const models = (await rpc.command('get_available_models')).models;
+          // 面板据此显示上下文窗口；只写公开的模型目录字段，不含任何凭据。
+          try { fs.writeFileSync(path.join(this.storage.root, 'models-catalog.json'), JSON.stringify(models.map(m => ({ provider: m.provider, model: m.id, name: m.name, contextWindow: m.contextWindow, maxTokens: m.maxTokens })))); } catch {}
+          return models;
+        }
         finally { await rpc.close(); }
       })().catch(error => { this.catalog = null; throw error; });
     }

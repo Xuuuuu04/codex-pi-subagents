@@ -3,54 +3,59 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pi 调度台</title>
-  <link rel="stylesheet" href="/style.css"><script src="/conversation.js" defer></script><script src="/app.js" defer></script>
+  <link rel="stylesheet" href="/style.css"><script src="/conversation.js" defer></script><script src="/charts.js" defer></script><script src="/app.js" defer></script>
 </head>
 <body>
-  <aside class="side" aria-label="会话列表">
-    <div class="brand">
-      <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="14" fill="none" stroke="currentColor" stroke-width="2"/><circle cx="16" cy="16" r="4" fill="currentColor"/><circle cx="16" cy="4.5" r="2.6" class="orbit"/><path d="M16 20v6M10.5 13.5 6 11M21.5 13.5 26 11" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-      <h1>Pi 调度台</h1>
-      <span class="live" id="live" role="status" title="正在连接"><i></i></span>
-    </div>
-    <div class="search">
-      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/></svg>
-      <input id="search" type="search" placeholder="搜索会话" aria-label="搜索会话"><kbd>/</kbd>
-    </div>
-    <div class="chips" id="chips" role="group" aria-label="按状态筛选"></div>
-    <nav class="list" id="list"></nav>
-    <p class="list-empty" id="empty" hidden></p>
-    <div class="side-foot">
-      <div class="dist" id="dist" role="img" aria-label="会话状态分布"></div>
-      <div class="totals" id="totals"></div>
-      <div class="side-actions">
-        <span id="connection">正在连接</span>
-        <button type="button" class="icon-btn" id="notify" title="状态变化时提醒" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M6 16V11a6 6 0 1 1 12 0v5l1.5 2h-15zM10 20.5a2 2 0 0 0 4 0"/></svg></button>
-        <button type="button" class="icon-btn" id="theme" title="切换明暗"><svg viewBox="0 0 24 24"><path d="M20 14.5A8 8 0 1 1 9.5 4a6.5 6.5 0 0 0 10.5 10.5z"/></svg></button>
-        <button type="button" class="icon-btn" id="pause" title="暂停 / 继续（P）" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M9 6v12M15 6v12"/></svg></button>
+  <div class="app" id="app">
+    <aside class="side" id="side" aria-label="会话列表">
+      <div class="side-top">
+        <div class="brand">
+          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12.5" class="ring"/><circle cx="16" cy="16" r="3.6" class="core"/><circle cx="16" cy="3.5" r="2.4" class="orbit"/></svg>
+          <span class="brand-name">Pi 调度台</span>
+          <span class="live" id="live" role="status" title="正在连接"><i></i></span>
+        </div>
+        <button type="button" class="icon-btn" id="side-collapse" title="收起侧栏"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M9.5 4.5v15"/></svg></button>
       </div>
-    </div>
-  </aside>
+      <label class="search">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 4 4"/></svg>
+        <input id="search" type="search" placeholder="搜索会话、模型或目录" aria-label="搜索会话"><kbd>/</kbd>
+      </label>
+      <div class="chips" id="chips" role="group" aria-label="按状态筛选"></div>
+      <nav class="list" id="list"></nav>
+      <p class="list-empty" id="empty" hidden></p>
+      <div class="side-foot">
+        <div class="dist" id="dist" role="img" aria-label="会话状态分布"></div>
+        <div class="totals" id="totals"></div>
+        <div class="side-actions">
+          <span id="connection">正在连接</span>
+          <button type="button" class="icon-btn" id="notify" title="状态变化时提醒" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M6.5 16v-4.5a5.5 5.5 0 1 1 11 0V16l1.5 2h-14zM10 20.5a2 2 0 0 0 4 0"/></svg></button>
+          <button type="button" class="icon-btn" id="theme" title="切换深浅色"><svg viewBox="0 0 24 24"><path d="M19.5 14.5A7.5 7.5 0 1 1 9.5 4.5a6 6 0 0 0 10 10z"/></svg></button>
+          <button type="button" class="icon-btn" id="pause" title="暂停更新（P）" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M9 6.5v11M15 6.5v11"/></svg></button>
+        </div>
+      </div>
+    </aside>
+    <div class="resizer" data-resize="side" role="separator" aria-orientation="vertical" aria-label="调整左侧栏宽度" tabindex="0"></div>
 
-  <main class="main">
-    <header class="main-head">
-      <div class="title-line"><span class="dot" id="d-dot"></span><h2 id="d-name">Pi 调度台</h2><span class="d-model" id="d-model"></span></div>
-      <nav class="views" role="tablist" aria-label="查看方式">
-        <button type="button" role="tab" data-tab="messages">对话</button>
-        <button type="button" role="tab" data-tab="tools">工具</button>
-        <button type="button" role="tab" data-tab="events">事件</button>
-        <button type="button" role="tab" data-tab="result">结果</button>
-        <button type="button" role="tab" data-tab="info">信息</button>
-      </nav>
-      <button type="button" class="icon-btn" id="panel-toggle" title="显示 / 隐藏右侧面板"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM15 5v14"/></svg></button>
-    </header>
-    <div id="error" class="banner" role="alert" hidden></div>
-
-    <div class="stage">
+    <main class="main">
+      <header class="main-head">
+        <button type="button" class="icon-btn" id="side-open" title="展开侧栏"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M9.5 4.5v15"/></svg></button>
+        <div class="title-line"><span class="dot" id="d-dot"></span><h2 id="d-name">Pi 调度台</h2><span class="d-model" id="d-model"></span></div>
+        <nav class="seg" id="views" role="tablist" aria-label="查看方式">
+          <i class="seg-thumb" aria-hidden="true"></i>
+          <button type="button" role="tab" data-tab="messages">对话</button>
+          <button type="button" role="tab" data-tab="tools">工具</button>
+          <button type="button" role="tab" data-tab="events">事件</button>
+          <button type="button" role="tab" data-tab="result">结果</button>
+          <button type="button" role="tab" data-tab="info">信息</button>
+        </nav>
+        <button type="button" class="icon-btn" id="panel-toggle" title="显示 / 隐藏右侧面板"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M14.5 4.5v15"/></svg></button>
+      </header>
+      <div id="error" class="banner" role="alert" hidden></div>
       <section class="thread" aria-label="会话内容">
         <div class="scroller" id="scroller">
           <div class="column">
             <div class="placeholder" id="placeholder">
-              <svg viewBox="0 0 120 80" aria-hidden="true"><path d="M8 60h104" class="axis"/><path d="M14 52 32 40l16 8 18-22 16 12 22-20" class="trace"/><circle cx="104" cy="18" r="4" class="pdot"/></svg>
+              <svg viewBox="0 0 120 80" aria-hidden="true"><path d="M8 62h104" class="axis"/><path d="M14 54C26 50 30 40 44 44s18-20 32-16 16-14 30-18" class="trace"/><circle cx="106" cy="10" r="3.5" class="pdot"/></svg>
               <p id="placeholder-text">正在读取本机会话</p>
             </div>
             <div id="records"></div>
@@ -58,27 +63,44 @@
           </div>
         </div>
         <div class="dock" id="dock" hidden>
-          <button type="button" class="jump" id="jump" hidden>↓ 回到最新</button>
+          <button type="button" class="jump" id="jump" hidden><svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button>
           <div class="dock-alerts" id="d-alerts"></div>
           <div class="dock-bar" id="d-now"></div>
         </div>
       </section>
+    </main>
 
-      <aside class="panel" id="panel" aria-label="会话概况" hidden>
-        <section class="speed"><h3>Token 速度</h3><div id="p-speed"></div></section>
-        <section><h3>状态</h3><div class="p-status" id="p-status"></div></section>
-        <section><h3>进度</h3>
-          <div class="lane-wrap" id="lane-wrap"><svg id="lane" role="img" aria-label="会话时间线"></svg><div class="tip" id="tip" hidden></div></div>
-          <div class="axis-labels"><span id="axis-start"></span><span id="axis-mid"></span><span id="axis-end"></span></div>
-          <div class="track-key"><span class="k-tool">工具</span><span class="k-err">失败</span><span class="k-comm">通信</span><span class="k-life">阶段</span></div>
-        </section>
-        <section><h3>用量</h3><dl class="figures" id="d-figures"></dl></section>
-        <section id="p-files-wrap" hidden><h3>改动文件</h3><ul class="p-files" id="p-files"></ul></section>
-        <section id="d-report" hidden><h3>最近报告</h3><p class="p-report"></p></section>
-        <section class="p-actions"><button type="button" class="link" data-copy="id">复制会话身份</button><button type="button" class="link" data-copy="cwd">复制工作目录</button></section>
-      </aside>
-    </div>
-  </main>
+    <div class="resizer" data-resize="panel" role="separator" aria-orientation="vertical" aria-label="调整右侧面板宽度" tabindex="0"></div>
+    <aside class="panel" id="panel" aria-label="会话概况">
+      <header class="panel-head">
+        <nav class="seg small" id="ptabs" role="tablist" aria-label="面板内容">
+          <i class="seg-thumb" aria-hidden="true"></i>
+          <button type="button" role="tab" data-ptab="overview">概况</button>
+          <button type="button" role="tab" data-ptab="context">上下文</button>
+          <button type="button" role="tab" data-ptab="changes">改动<span class="badge" id="changes-badge" hidden></span></button>
+        </nav>
+        <button type="button" class="icon-btn" id="panel-close" title="收起面板"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
+      </header>
+      <div class="panel-body" id="panel-body">
+        <div class="pview" data-pview="overview">
+          <section class="card status-card" id="p-status"></section>
+          <section class="card"><header class="card-head"><h3>实时速度</h3><span class="card-meta" id="speed-meta"></span></header><div id="p-speed"></div></section>
+          <section class="card"><header class="card-head"><h3>时间线</h3><span class="card-meta" id="axis-mid"></span></header>
+            <div class="lane-wrap" id="lane-wrap"><svg id="lane" role="img" aria-label="会话时间线"></svg></div>
+            <div class="axis-labels"><span id="axis-start"></span><span id="axis-end"></span></div>
+            <div class="legend"><span class="k-tool">工具</span><span class="k-err">失败</span><span class="k-comm">通信</span><span class="k-life">阶段</span></div>
+          </section>
+          <section class="card"><header class="card-head"><h3>用量</h3></header><dl class="figures" id="d-figures"></dl></section>
+          <section class="card" id="d-report" hidden><header class="card-head"><h3>最近报告</h3></header><div class="p-report"></div></section>
+        </div>
+        <div class="pview" data-pview="context" hidden><div id="p-context"></div></div>
+        <div class="pview" data-pview="changes" hidden><div id="p-changes"></div></div>
+      </div>
+    </aside>
+  </div>
+  <div class="chart-tip" id="chart-tip" hidden></div>
+  <div class="menu" id="menu" role="menu" hidden></div>
+  <dialog class="dialog" id="dialog"><form method="dialog"><h3 id="dialog-title"></h3><input id="dialog-input" autocomplete="off" maxlength="60"><p class="dialog-hint" id="dialog-hint"></p><div class="dialog-actions"><button value="cancel" class="btn ghost">取消</button><button value="ok" class="btn primary" id="dialog-ok">确定</button></div></form></dialog>
   <div class="toast" id="toast" role="status" hidden></div>
 </body>
 </html>

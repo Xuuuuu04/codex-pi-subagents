@@ -4,6 +4,7 @@ import path from 'node:path';
 import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { DashboardData } from './dashboard-data.js';
+import { agentChanges } from './agent-changes.js';
 
 export const defaultDashboardPort = 3141;
 const assets = fileURLToPath(new URL('../dashboard/', import.meta.url));
@@ -27,7 +28,7 @@ function streamSpeed(file, request, response) {
 /** Private loopback HTTP viewer. All agent operations remain with the owning Codex connection. */
 export async function startDashboard({ root, port = defaultDashboardPort, token = randomBytes(32).toString('hex') }) {
   const data = new DashboardData(root);
-  const files = new Map([['/', ['index.html', 'text/html']], ['/app.js', ['app.js', 'text/javascript']], ['/conversation.js', ['conversation.js', 'text/javascript']], ['/style.css', ['style.css', 'text/css']]]);
+  const files = new Map([['/', ['index.html', 'text/html']], ['/app.js', ['app.js', 'text/javascript']], ['/conversation.js', ['conversation.js', 'text/javascript']], ['/charts.js', ['charts.js', 'text/javascript']], ['/style.css', ['style.css', 'text/css']]]);
   const server = http.createServer((request, response) => {
     const send = (status, body, contentType = 'application/json') => {
       response.writeHead(status, { 'content-type': `${contentType}; charset=utf-8`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',
@@ -53,11 +54,24 @@ export async function startDashboard({ root, port = defaultDashboardPort, token 
       const valid = value => { const actual = Buffer.from(value || ''); const expected = Buffer.from(token); return actual.length === expected.length && timingSafeEqual(actual, expected); };
       if (!valid(cookie) && !valid((request.headers.authorization || '').replace(/^Bearer /, ''))) { send(401, { error: '查看会话已过期，请刷新面板页面。' }); return; }
       // 唯一的写操作：面板自己的显示标记。需要有效查看令牌、同源和自定义请求头（跨站页面发不出该头）。
-      const mark = /^\/api\/agents\/([^/]+)\/mark$/.exec(url.pathname);
-      if (mark && request.method === 'POST') {
+      // 写操作只整理面板自己的显示（标记、分组、改名），需要有效查看令牌、同源和自定义请求头（跨站页面发不出该头）。
+      if (request.method === 'POST') {
         if (request.headers['x-pi-dashboard'] !== '1' || site === 'cross-site') { send(403, { error: 'Invalid request' }); return; }
-        let body = ''; request.on('data', chunk => { body += chunk; if (body.length > 1000) request.destroy(); });
-        request.on('end', () => { try { send(200, data.mark(mark[1], JSON.parse(body || '{}').status ?? null)); } catch (error) { send(400, { error: error.message }); } });
+        const write = /^\/api\/agents\/([^/]+)\/(mark|move)$/.exec(url.pathname);
+        if (!write && url.pathname !== '/api/groups') { send(404, { error: 'Not found' }); return; }
+        let body = ''; request.on('data', chunk => { body += chunk; if (body.length > 2000) request.destroy(); });
+        request.on('end', () => {
+          try {
+            const value = JSON.parse(body || '{}');
+            send(200, !write ? data.renameGroup(value.key, value.name ?? null) : write[2] === 'mark' ? data.mark(write[1], value.status ?? null) : data.move(write[1], value.group ?? null));
+          } catch (error) { send(400, { error: error.message }); }
+        });
+        return;
+      }
+      const changes = /^\/api\/agents\/([^/]+)\/changes$/.exec(url.pathname);
+      if (changes) {
+        const record = JSON.parse(fs.readFileSync(path.join(data.directory(changes[1]), 'agent.json'), 'utf8'));
+        agentChanges(record, { includeDiff: true, maxBytes: 600000 }).then(result => send(200, result), error => send(400, { error: error.message }));
         return;
       }
       if (request.method !== 'GET') { send(405, { error: 'Method not allowed' }); return; }

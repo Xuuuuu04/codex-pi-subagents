@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
 import { setup, spawn, settled } from './helpers/setup.js';
-import { DashboardData, readTail, summarizeActivity } from '../src/dashboard-data.js';
+import { DashboardData, readTail, summarizeActivity, contextAnalysis, pullRequestLinks } from '../src/dashboard-data.js';
 import { startDashboard } from '../src/dashboard.js';
 import { LiveStream } from '../src/live-stream.js';
 
@@ -41,7 +41,9 @@ test('private read-only HTTP rejects missing token, other hosts and mutation req
     request.on('error', reject);
   });
   assert.equal(foreignHost, 403);
-  assert.equal((await fetch(origin + '/api/agents', { method: 'POST', headers })).status, 405);
+  assert.equal((await fetch(origin + '/api/agents', { method: 'POST', headers })).status, 403);
+  assert.equal((await fetch(origin + '/api/agents', { method: 'POST', headers: { ...headers, 'x-pi-dashboard': '1' } })).status, 404);
+  assert.equal((await fetch(origin + '/api/agents', { method: 'DELETE', headers })).status, 405);
   const result = await (await fetch(origin + '/api/agents', { headers })).json(); assert.equal(result.agents[0].id, a.id);
   const detail = await (await fetch(origin + '/api/agents/' + a.id, { headers })).json(); assert.equal(detail.agent.status, 'completed');
   assert.equal((await fetch(origin + '/api/agents/not-an-id', { headers })).status, 400);
@@ -118,4 +120,41 @@ test('dashboard marks stay in the dashboard: they relabel idle sessions, can be 
   data.mark(a.id, 'closed');
   const record = manager.storage.load(a.id); record.status = 'running'; record.updatedAt = new Date(Date.now() + 5000).toISOString(); manager.storage.save(record);
   assert.notEqual(data.snapshot(a.id).status, 'closed');
+});
+
+test('context analysis reads per-request context size, system prompt sections and part estimates', () => {
+  const head = [{ type: 'message', message: { role: 'system', content: '', sections: { tools: 'read write edit bash', project_context: '项目说明'.repeat(50) } } }];
+  const entries = [
+    { type: 'message', timestamp: '2026-10-13T00:00:00Z', message: { role: 'user', content: [{ type: 'text', text: '请升级依赖' }] } },
+    { type: 'message', timestamp: '2026-10-13T00:00:05Z', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'plan' }, { type: 'toolCall', arguments: { command: 'ls' } }], usage: { input: 100, cacheRead: 900, output: 20 } } },
+    { type: 'message', timestamp: '2026-10-13T00:00:06Z', message: { role: 'toolResult', content: [{ type: 'text', text: 'a\nb\nc' }] } },
+    { type: 'message', timestamp: '2026-10-13T00:00:09Z', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], usage: { input: 50, cacheRead: 1000, cacheWrite: 10, output: 5 } } },
+  ];
+  const ctx = contextAnalysis(head, entries, 512000);
+  assert.equal(ctx.requests, 2); assert.equal(ctx.used, 1060); assert.equal(ctx.peak, 1060); assert.equal(ctx.cached, 1000); assert.equal(ctx.contextWindow, 512000);
+  assert.deepEqual(ctx.sections.map(s => s.name), ['工具说明', '项目说明']);
+  assert.ok(ctx.parts.user > 0 && ctx.parts.thinking > 0 && ctx.parts.toolCalls > 0 && ctx.parts.toolResults > 0 && ctx.parts.assistant > 0);
+});
+
+test('pull request links are collected once with created and merged hints', () => {
+  const entries = [
+    { type: 'message', timestamp: 't1', message: { role: 'assistant', content: [{ type: 'toolCall', arguments: { command: 'gh pr create --fill' } }] } },
+    { type: 'message', timestamp: 't2', message: { role: 'toolResult', content: [{ type: 'text', text: 'https://github.com/acme/app/pull/42\n' }] } },
+    { type: 'message', timestamp: 't3', message: { role: 'toolResult', content: [{ type: 'text', text: 'Merged https://github.com/acme/app/pull/42' }] } },
+  ];
+  const prs = pullRequestLinks(entries);
+  assert.equal(prs.length, 1); assert.equal(prs[0].number, 42); assert.equal(prs[0].repo, 'acme/app'); assert.equal(prs[0].merged, true); assert.equal(prs[0].firstAt, 't2');
+});
+
+test('dashboard can move a session to another group and rename groups without touching agent records', async t => {
+  const { manager, cwd } = await setup(t);
+  const a = await spawn(manager, cwd); await settled(manager, a.id);
+  const data = new DashboardData(manager.storage.root); const record = fs.readFileSync(path.join(manager.storage.root, a.id, 'agent.json'), 'utf8');
+  data.move(a.id, 'custom:发布'); assert.equal(data.list().agents[0].movedTo, 'custom:发布');
+  data.renameGroup('custom:发布', '上线'); assert.deepEqual(data.list().groupNames, { 'custom:发布': '上线' });
+  data.mark(a.id, 'closed'); assert.equal(data.list().agents[0].status, 'closed'); assert.equal(data.list().agents[0].movedTo, 'custom:发布');
+  data.move(a.id, null); data.renameGroup('custom:发布', null); data.mark(a.id, null);
+  assert.equal(data.list().agents[0].movedTo, undefined); assert.deepEqual(data.list().groupNames, {});
+  assert.throws(() => data.move(a.id, ''), /Invalid group/);
+  assert.equal(fs.readFileSync(path.join(manager.storage.root, a.id, 'agent.json'), 'utf8'), record);
 });
