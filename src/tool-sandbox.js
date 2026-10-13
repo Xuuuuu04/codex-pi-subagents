@@ -60,7 +60,7 @@ ${privateDirectories.map(value => `(deny file-read* ${filter(value)}) (deny file
 ${policy.allowNetwork ? '' : '(deny network*)'}
 (deny appleevent-send) (deny mach-lookup) (deny process-info*) (deny signal)`;
 }
-/** Development mode: read anything except credentials and controller state; write the worktree, Git and build caches; local network only. */
+/** Development mode: read anything except credentials and controller state contents (path metadata stays visible so worktrees inside the state root can resolve); write the worktree, Git and build caches; local network only. */
 function developmentProfile(policy) {
   const home = os.homedir();
   const write = [policy.cwd, policy.tempDir, gitCommonDir(policy.cwd), path.join(home, '.cache'), path.join(home, '.local/share/uv'), path.join(home, 'Library/Caches'), '/private/var/folders', '/private/tmp', '/dev']
@@ -70,7 +70,7 @@ function developmentProfile(policy) {
   return `(version 1) (allow default)
 (deny file-write* (require-not (require-any ${write.map(filter).join(' ')})))
 ${privateDirectories.map(value => `(deny file-read* ${filter(value)}) (deny file-write* ${filter(value)})`).join('\n')}
-(deny file-read* (require-all ${filter(policy.stateRoot)} (require-not (require-any ${own} ${filter(policy.tempDir)}))))
+(deny file-read-data (require-all ${filter(policy.stateRoot)} (require-not (require-any ${own} ${filter(policy.tempDir)}))))
 (deny file-write* (require-all ${filter(policy.stateRoot)} (require-not (require-any ${own} ${filter(policy.tempDir)}))))
 ${policy.allowNetwork ? '' : '(deny network*) (allow network* (remote ip "localhost:*")) (allow network* (remote unix-socket))'}
 (deny appleevent-send)`;

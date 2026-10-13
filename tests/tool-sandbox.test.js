@@ -6,7 +6,7 @@ test('file and shell tools allow owned writes and reject sibling writes, symlink
   const cwd=fs.mkdtempSync(path.join(os.tmpdir(),'pi-policy-test-'));t.after(()=>fs.rmSync(cwd,{recursive:true,force:true}));
   for(const name of ['src','other','state','tmp']) fs.mkdirSync(path.join(cwd,name));
   fs.writeFileSync(cwd+'/state/private','controller token');fs.symlinkSync(cwd+'/other',cwd+'/src/link');
-  const policy={cwd,ownedPaths:['src'],tempDir:cwd+'/tmp',stateRoot:cwd+'/state',allowNetwork:false};
+  const policy={cwd,ownedPaths:['src'],tempDir:cwd+'/tmp',stateRoot:cwd+'/state',allowNetwork:false,sandboxMode:'strict'};
   await fileOperation(policy,'write','src/a','allowed');assert.equal(String(await fileOperation(policy,'read','src/a')),'allowed');
   await assert.rejects(fileOperation(policy,'write','other/a','bad'),/scope/);
   await assert.rejects(fileOperation(policy,'write','src/link/a','bad'),/scope/);
@@ -17,5 +17,5 @@ test('file and shell tools allow owned writes and reject sibling writes, symlink
 });
 test('sandbox cancellation terminates the shell and descendants',async t=>{
  const cwd=fs.mkdtempSync(path.join(os.tmpdir(),'pi-cancel-test-'));t.after(()=>fs.rmSync(cwd,{recursive:true,force:true}));fs.mkdirSync(cwd+'/state');fs.mkdirSync(cwd+'/tmp');
- const abort=new AbortController();setTimeout(()=>abort.abort(),100);const result=await runSandboxed({cwd,ownedPaths:['.'],tempDir:cwd+'/tmp',stateRoot:cwd+'/state',allowNetwork:false},'/bin/bash',['-c','sleep 1; echo bad > escaped'],{signal:abort.signal});assert.equal(result.exitCode,137);await new Promise(r=>setTimeout(r,1050));assert.ok(!fs.existsSync(cwd+'/escaped'));
+ const abort=new AbortController();setTimeout(()=>abort.abort(),100);const result=await runSandboxed({cwd,ownedPaths:['.'],tempDir:cwd+'/tmp',stateRoot:cwd+'/state',allowNetwork:false,sandboxMode:'strict'},'/bin/bash',['-c','sleep 1; echo bad > escaped'],{signal:abort.signal});assert.equal(result.exitCode,137);await new Promise(r=>setTimeout(r,1050));assert.ok(!fs.existsSync(cwd+'/escaped'));
 });
