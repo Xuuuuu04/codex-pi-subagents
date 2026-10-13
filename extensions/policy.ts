@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { createBashToolDefinition, createReadToolDefinition, createWriteToolDefinition, createEditToolDefinition, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { fileOperation, runSandboxed } from '../src/tool-sandbox.js';
+import { fileOperation, runSandboxed, sandboxMode } from '../src/tool-sandbox.js';
 import { SpeedMeter } from '../src/speed-meter.js';
 import path from 'node:path';
 
@@ -14,8 +14,9 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(createReadToolDefinition(policy.cwd, { operations: { readFile, access } }));
   pi.registerTool(createWriteToolDefinition(policy.cwd, { operations: { writeFile, mkdir: async () => {} } }));
   pi.registerTool(createEditToolDefinition(policy.cwd, { operations: { readFile, writeFile, access } }));
+  // 开发模式要跑完整检查，单条命令最多 30 分钟；严格模式仍是 5 分钟。
   pi.registerTool(createBashToolDefinition(policy.cwd, { exposeSessionEnvironment: false, operations: {
-    exec: (command, cwd, options) => runSandboxed({ ...policy, cwd }, '/bin/bash', ['--noprofile', '--norc', '-c', command], { ...options, timeout: Math.min((options.timeout || 60) * 1000, 300000) }),
+    exec: (command, cwd, options) => runSandboxed({ ...policy, cwd }, '/bin/bash', ['--noprofile', '--norc', '-c', command], { ...options, timeout: Math.min((options.timeout || 60) * 1000, sandboxMode(policy) === 'dev' ? 1800000 : 300000) }),
   } }));
   const tools = ['read', 'write', 'edit', 'bash', 'agent_message', 'ask_parent'];
   // 实时输出速度写在本代理目录，面板服务读取后推送给页面；只计数，不保存内容。
