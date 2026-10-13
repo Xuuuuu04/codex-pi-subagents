@@ -11,7 +11,7 @@ const assets = fileURLToPath(new URL('../dashboard/', import.meta.url));
 /** Private loopback HTTP viewer. All agent operations remain with the owning Codex connection. */
 export async function startDashboard({ root, port = defaultDashboardPort, token = randomBytes(32).toString('hex') }) {
   const data = new DashboardData(root);
-  const files = new Map([['/', ['index.html', 'text/html']], ['/app.js', ['app.js', 'text/javascript']], ['/style.css', ['style.css', 'text/css']]]);
+  const files = new Map([['/', ['index.html', 'text/html']], ['/app.js', ['app.js', 'text/javascript']], ['/conversation.js', ['conversation.js', 'text/javascript']], ['/style.css', ['style.css', 'text/css']]]);
   const server = http.createServer((request, response) => {
     const send = (status, body, contentType = 'application/json') => {
       response.writeHead(status, { 'content-type': `${contentType}; charset=utf-8`, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff',

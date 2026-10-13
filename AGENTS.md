@@ -26,7 +26,8 @@
 - `src/storage.js`：私密状态和事件保存。
 - `src/workspace.js`：文件范围、独立 Git 工作目录。
 - `src/callbacks.js`：桥接进程内的回调（Claude channel、`codex queue`）；`src/agent-changes.js`：只读改动查看。
-- `src/dashboard*.js`、`dashboard/`：只读数据、私密本机服务、独立启动与页面。
+- `src/dashboard*.js`、`dashboard/`：只读数据、私密本机服务、独立启动与页面；`dashboard/conversation.js` 渲染实时对话。
+- `src/live-stream.js`：管理进程把正在生成的消息和工具输出写入会话目录的 `live.json`，仅供面板读取。
 - `extensions/policy.ts`：实际文件/shell 限制、启动确认与请求前检查。
 - `extensions/communication.ts`：子代理可调用的报告和提问工具。
 - `scripts/`：检查、安装、真实验收。
@@ -72,5 +73,6 @@ Codex 调用 MCP → 私密 Unix socket → 独立管理器创建或控制 Pi �
 - 新增 MCP 后当前已运行的 Codex 聊天可能尚未加载；重启客户端。
 - 安装使用绝对 Node/Pi 路径；移动项目或移除对应 Node 版本后重跑安装。
 - 配置备份可能包含其他服务的凭据，仅留本机；不进入提交或报告。
+- 面板展示模型返回的思考文本，不展示 thinkingSignature 等加密推理；`live.json` 只在新版管理进程中生成。
 - 面板默认端口 3141（4001 等被本机 QQ 占用）；端口变化时启动器先起新面板，再退出旧的只读面板。
 - 面板普通地址自动建立 HttpOnly、SameSite=Strict 查看 cookie，内部令牌仅存本机；不允许其他网站读取、任意路径读取、远程绑定或 HTML 执行日志内容。

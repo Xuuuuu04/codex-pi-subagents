@@ -6,6 +6,7 @@ import http from 'node:http';
 import { setup, spawn, settled } from './helpers/setup.js';
 import { DashboardData, readTail, summarizeActivity } from '../src/dashboard-data.js';
 import { startDashboard } from '../src/dashboard.js';
+import { LiveStream } from '../src/live-stream.js';
 
 test('dashboard reads live agents and identifies disconnected controllers without changing ownership', async t => {
   const { manager, cwd } = await setup(t);
@@ -56,17 +57,18 @@ test('private read-only HTTP rejects missing token, other hosts and mutation req
   assert.equal(manager.read(a.id).agent.status, 'completed');
 });
 
-test('saved session rendering omits hidden reasoning, bounds text and rejects arbitrary session paths', async t => {
+test('saved session rendering shows thinking text without provider signatures, bounds text and rejects arbitrary session paths', async t => {
   const { manager, cwd } = await setup(t);
   const a = await spawn(manager, cwd); await settled(manager, a.id);
   const directory = manager.storage.directory(a.id); const sessions = path.join(directory, 'sessions'); fs.mkdirSync(sessions, { recursive: true });
   const file = path.join(sessions, 'test.jsonl');
-  const entry = { type: 'message', timestamp: '2026-10-06', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'HIDDEN' }, { type: 'text', text: '<script>sample</script>' }, { type: 'toolCall', name: 'bash', arguments: { command: 'test' } }] } };
+  const entry = { type: 'message', timestamp: '2026-10-06', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Visible plan', thinkingSignature: 'ENCRYPTED' }, { type: 'text', text: '<script>sample</script>' }, { type: 'toolCall', name: 'bash', arguments: { command: 'test' } }] } };
   fs.writeFileSync(file, JSON.stringify(entry) + '\n' + '{"unfinished":');
   assert.equal(readTail(file).length, 1);
   const record = manager.storage.load(a.id); record.sessionFile = file; manager.storage.save(record);
   const data = new DashboardData(manager.storage.root); const detail = data.detail(a.id);
-  assert.equal(detail.messages[0].text, '<script>sample</script>'); assert.ok(!JSON.stringify(detail).includes('HIDDEN'));
+  assert.equal(detail.messages[0].text, '<script>sample</script>'); assert.equal(detail.messages[0].thinking, 'Visible plan'); assert.ok(!JSON.stringify(detail).includes('ENCRYPTED'));
+  assert.equal(detail.messages[0].calls[0].arguments.command, 'test');
   record.sessionFile = path.join(cwd, 'outside.jsonl'); fs.writeFileSync(record.sessionFile, JSON.stringify(entry) + '\n'); manager.storage.save(record);
   assert.match(data.detail(a.id).transcriptError, /outside/);
 });
@@ -82,4 +84,24 @@ test('activity summary counts finished tools, failures and recent per-minute buc
   assert.equal(activity.toolCalls, 3); assert.equal(activity.toolErrors, 1);
   assert.equal(activity.buckets.length, 30); assert.equal(activity.buckets[29], 1); assert.equal(activity.buckets[27], 1);
   assert.equal(activity.buckets.reduce((a, b) => a + b), 2); assert.equal(activity.lastEvent.type, 'message');
+});
+
+test('live stream mirrors streaming thinking, text and tool output, then clears itself', async t => {
+  const directory = fs.mkdtempSync(path.join(fs.realpathSync(process.env.TMPDIR || '/tmp'), 'live-')); t.after(() => fs.rmSync(directory, { recursive: true, force: true }));
+  const file = path.join(directory, 'live.json'); const live = new LiveStream(file, 5);
+  const read = async () => { await new Promise(resolve => setTimeout(resolve, 20)); return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null; };
+  live.handle({ type: 'message_start', message: { role: 'assistant' } });
+  live.handle({ type: 'message_update', assistantMessageEvent: { type: 'thinking_start', contentIndex: 0 } });
+  live.handle({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'Plan ' } });
+  live.handle({ type: 'message_update', assistantMessageEvent: { type: 'thinking_delta', contentIndex: 0, delta: 'steps' } });
+  live.handle({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_start', contentIndex: 1, id: 'c1', toolName: 'bash' } });
+  live.handle({ type: 'message_update', assistantMessageEvent: { type: 'toolcall_end', contentIndex: 1, toolCall: { name: 'bash', arguments: { command: 'ls' } } } });
+  let state = await read();
+  assert.equal(state.message.blocks[0].text, 'Plan steps'); assert.equal(state.message.blocks[1].name, 'bash'); assert.equal(state.message.blocks[1].done, true);
+  live.handle({ type: 'message_end', message: { role: 'assistant' } });
+  live.handle({ type: 'tool_execution_start', toolCallId: 'c1', toolName: 'bash' });
+  live.handle({ type: 'tool_execution_update', toolCallId: 'c1', partialResult: { content: [{ type: 'text', text: 'a.txt' }] } });
+  state = await read(); assert.equal(state.message, null); assert.equal(state.tools.c1.output, 'a.txt');
+  live.handle({ type: 'tool_execution_end', toolCallId: 'c1' });
+  assert.equal(await read(), null);
 });

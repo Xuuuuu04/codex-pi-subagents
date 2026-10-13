@@ -3,6 +3,7 @@ import path from 'node:path';
 import { processAlive } from './storage.js';
 
 const active = new Set(['starting', 'running', 'waiting', 'finishing', 'idle']);
+const working = new Set(['starting', 'running', 'waiting', 'finishing']);
 export const isAgentId = id => /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id);
 
 /** Read bounded, complete JSONL records while another process may still be appending. */
@@ -19,6 +20,37 @@ export function readTail(file, limit = 500) {
     if (start) lines.shift();
     return lines.filter(Boolean).slice(-limit).map(line => JSON.parse(line));
   } finally { fs.closeSync(fd); }
+}
+
+/** Bound every string inside tool arguments so one huge write cannot flood the page. */
+function clipValue(value, limit = 6000) {
+  if (typeof value === 'string') return value.length > limit ? `${value.slice(0, limit)}\n…（已截断 ${value.length - limit} 字）` : value;
+  if (Array.isArray(value)) return value.slice(0, 50).map(item => clipValue(item, limit));
+  if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).slice(0, 40).map(([key, item]) => [key, clipValue(item, limit)]));
+  return value;
+}
+const textOf = blocks => blocks.filter(b => b.type === 'text').map(b => b.text).join('\n');
+
+/** Project one saved session entry for display. Thinking text is shown; provider signatures and encrypted reasoning never are. */
+export function transcriptMessage(entry, index = 0) {
+  if (entry.type !== 'message' || !entry.message) return null;
+  const m = entry.message;
+  const blocks = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content || '') }];
+  const base = { id: entry.id || `${entry.timestamp}-${index}`, role: m.role, time: entry.timestamp };
+  if (m.role === 'toolResult') {
+    const text = textOf(blocks);
+    return { ...base, toolCallId: m.toolCallId, toolName: m.toolName, isError: !!m.isError, durationMs: m.durationMs,
+      text: text.length > 6000 ? `…\n${text.slice(-6000)}` : text, diff: typeof m.details?.diff === 'string' ? m.details.diff.slice(0, 12000) : undefined,
+      answer: typeof m.details?.answer === 'string' ? m.details.answer.slice(0, 6000) : undefined };
+  }
+  const thinkingBlocks = blocks.filter(b => b.type === 'thinking');
+  const thinking = thinkingBlocks.map(b => b.thinking || '').filter(Boolean).join('\n\n');
+  const calls = blocks.filter(b => b.type === 'toolCall').map(b => ({ id: b.id, name: b.name, arguments: clipValue(b.arguments || {}) }));
+  const text = textOf(blocks).slice(-12000);
+  if (!text && !calls.length && !thinkingBlocks.length && m.role !== 'assistant') return null;
+  return { ...base, text, calls, startedAt: typeof m.timestamp === 'number' ? new Date(m.timestamp).toISOString() : undefined,
+    thinking: thinking.slice(-8000) || undefined, thinkingRedacted: thinkingBlocks.length > 0 && !thinking,
+    stopReason: m.stopReason, error: m.stopReason === 'error' ? String(m.errorMessage || '').slice(0, 2000) : undefined };
 }
 
 const minute = 60 * 1000;
@@ -90,16 +122,19 @@ export class DashboardData {
         const file = fs.realpathSync(record.sessionFile);
         const allowed = fs.realpathSync(path.join(directory, 'sessions'));
         if (!file.startsWith(allowed + path.sep)) throw new Error('Session file is outside its private session directory');
-        for (const entry of readTail(file, 150)) {
-          if (entry.type !== 'message' || !entry.message) continue;
-          const m = entry.message;
-          const blocks = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content || '') }];
-          const text = blocks.filter(b => b.type === 'text').map(b => b.text).join('\n').slice(-12000);
-          const calls = blocks.filter(b => b.type === 'toolCall').map(b => ({ name: b.name, arguments: JSON.stringify(b.arguments || {}).slice(0, 4000) }));
-          if (text || calls.length) messages.push({ id: entry.id || `${entry.timestamp}-${messages.length}`, role: m.role, time: entry.timestamp, toolName: m.toolName, text, calls, isError: m.isError });
+        for (const entry of readTail(file, 500)) {
+          const message = transcriptMessage(entry, messages.length);
+          if (message) messages.push(message);
         }
       } catch (error) { transcriptError = error.message; }
     }
-    return { agent, messages: messages.slice(-50), transcriptError, refreshedAt: new Date().toISOString() };
+    return { agent, messages: messages.slice(-160), live: working.has(agent.status) ? this.live(directory) : null, transcriptError, refreshedAt: new Date().toISOString() };
+  }
+  /** Streaming mirror written by newer managers; stale files from a stopped run are ignored. */
+  live(directory) {
+    try {
+      const live = JSON.parse(fs.readFileSync(path.join(directory, 'live.json'), 'utf8'));
+      return Date.now() - Date.parse(live.updatedAt) < 10 * 60 * 1000 ? live : null;
+    } catch { return null; }
   }
 }

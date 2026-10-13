@@ -261,32 +261,14 @@ function renderHead(agent, tools) {
 }
 
 /* ---------- 记录区 ---------- */
-const roles = { user: '任务 / 指导', assistant: '模型回复', toolResult: '工具结果' };
-function preview(argumentsText) {
-  try { const args = JSON.parse(argumentsText); const pick = args.command ?? args.path ?? args.file_path ?? args.pattern ?? args.message ?? Object.values(args).find(v => typeof v === 'string'); return typeof pick === 'string' ? pick.replace(/\s+/g, ' ') : argumentsText; }
-  catch { return argumentsText; }
+function conversationTab(data, expanded) {
+  const box = el('div', { class: 'convo-scroll', 'data-agent': data.agent.id, onscroll: event => syncJump(event.currentTarget) }, renderConversation(data, expanded));
+  const jump = el('button', { type: 'button', class: 'jump', hidden: true, onclick: () => { box.scrollTo({ top: box.scrollHeight, behavior: 'smooth' }); } }, '↓ 最新');
+  const note = data.transcriptError ? `会话内容暂时无法读取：${data.transcriptError}` :
+    data.live ? '正在实时同步模型输出与工具输出。' : '按时间顺序显示最近 160 条已保存内容。逐字思考和命令输出需要新版管理进程。';
+  return [el('div', { class: 'convo-wrap' }, box, jump), note];
 }
-function prettyArgs(argumentsText) { try { return JSON.stringify(JSON.parse(argumentsText), null, 2); } catch { return argumentsText; } }
-function collapsible(key, open, summary, body) { const d = el('details', { 'data-key': key }, el('summary', {}, ...summary), body); d.open = open; return d; }
-function renderMessages(data, expanded) {
-  const thread = el('div', { class: 'thread' });
-  for (const m of [...data.messages].reverse()) {
-    const isTool = m.role === 'toolResult';
-    const item = el('article', { class: `msg ${m.role} ${m.isError ? 'error' : ''}` },
-      el('div', { class: 'msg-head' }, el('strong', { text: roles[m.role] || m.role }), m.toolName ? el('span', { class: 'tool', text: m.toolName }) : null,
-        m.isError ? el('span', { class: 'err', text: '失败' }) : null, el('time', { title: fullDate(m.time), text: clock(m.time) })));
-    if (m.text) {
-      if (isTool) { const key = `${data.agent.id}:${m.id}:text`; item.append(collapsible(key, expanded.get(key) ?? false, [el('span', { class: 'label', text: '查看输出' }), el('span', { class: 'preview', text: m.text.slice(0, 120).replace(/\s+/g, ' ') })], el('pre', { text: m.text }))); }
-      else item.append(el('div', { class: 'text', text: m.text }));
-    }
-    m.calls.forEach((call, index) => {
-      const key = `${data.agent.id}:${m.id}:call:${index}`;
-      item.append(collapsible(key, expanded.get(key) ?? false, [el('span', { class: 'call-name', text: call.name }), el('span', { class: 'preview', text: preview(call.arguments) })], el('pre', { text: prettyArgs(call.arguments) })));
-    });
-    thread.append(item);
-  }
-  return [thread, data.transcriptError ? `会话内容暂时无法读取：${data.transcriptError}` : '最近 50 条已保存内容，最新在前。模型尚未保存的逐字输出不在这里显示。'];
-}
+function syncJump(box) { const jump = box.parentElement?.querySelector('.jump'); if (jump) jump.hidden = box.scrollHeight - box.scrollTop - box.clientHeight < 80; }
 function renderTools(tools) {
   const stats = new Map();
   for (const c of tools.calls) {
@@ -331,21 +313,26 @@ function renderInfo(agent) {
 function renderRecords() {
   const data = state.detail; if (!data) return;
   const records = $('#records');
-  const key = JSON.stringify([state.tab, state.hideTools, data.agent.sequence, data.agent.status, data.messages.length, data.messages.at(-1)?.id, data.transcriptError, data.agent.lastText?.length]);
+  const key = JSON.stringify([state.tab, state.hideTools, data.agent.sequence, data.agent.status, data.messages.length, data.messages.at(-1)?.id, data.live?.updatedAt, data.transcriptError, data.agent.lastText?.length]);
   for (const button of document.querySelectorAll('[data-tab]')) button.setAttribute('aria-selected', String(button.dataset.tab === state.tab));
   if (key === state.recordsKey) return; state.recordsKey = key;
-  const expanded = new Map([...records.querySelectorAll('details')].map(node => [node.dataset.key, node.open]));
+  const expanded = new Map([...[...records.querySelectorAll('details')].map(node => [node.dataset.key, node.open]),
+    ...[...records.querySelectorAll('.bubble[data-key]')].map(node => [node.dataset.key, !node.classList.contains('clamped')])]);
   const pane = $('#detail-pane'); const scroll = pane.scrollTop; const tools = pairTools(data.agent.events);
-  const [content, note] = state.tab === 'messages' ? renderMessages(data, expanded) : state.tab === 'tools' ? renderTools(tools) : state.tab === 'events' ? renderEvents(data.agent) : state.tab === 'result' ? renderResult(data.agent) : renderInfo(data.agent);
+  const oldBox = records.querySelector('.convo-scroll'); const follow = !oldBox || oldBox.dataset.agent !== data.agent.id || oldBox.scrollHeight - oldBox.scrollTop - oldBox.clientHeight < 80;
+  const boxScroll = oldBox?.scrollTop || 0;
+  const [content, note] = state.tab === 'messages' ? conversationTab(data, expanded) : state.tab === 'tools' ? renderTools(tools) : state.tab === 'events' ? renderEvents(data.agent) : state.tab === 'result' ? renderResult(data.agent) : renderInfo(data.agent);
   records.replaceChildren(...[content].flat());
-  if (state.tab === 'messages' && !data.messages.length) records.replaceChildren(el('p', { class: 'records-empty', text: '暂时没有已保存的执行记录。' }));
   $('#record-note').textContent = note; pane.scrollTop = scroll;
+  const box = records.querySelector('.convo-scroll'); if (box) { box.scrollTop = follow ? box.scrollHeight : boxScroll; syncJump(box); }
 }
 
 /* ---------- 刷新 ---------- */
 async function refreshDetail() {
-  if (!state.selected) return;
-  const requested = state.selected; const data = await api(`/api/agents/${requested}`); if (state.selected !== requested) return;
+  if (!state.selected || state.detailFetching) return; state.detailFetching = true;
+  let data; const requested = state.selected;
+  try { data = await api(`/api/agents/${requested}`); } finally { state.detailFetching = false; }
+  if (state.selected !== requested) return;
   state.detail = data; const tools = pairTools(data.agent.events);
   $('#placeholder').hidden = true; $('#detail').hidden = false;
   renderHead(data.agent, tools); renderLane(data.agent, tools); renderRecords();
@@ -369,7 +356,7 @@ async function refresh() {
       state.selected = pick?.id || ''; state.recordsKey = '';
     }
     notifyChanges(); renderOverview(); renderChips(); renderList();
-    if (state.selected) await refreshDetail();
+    if (state.selected) await refreshDetail().catch(error => showError(error.message));
     else { $('#detail').hidden = true; $('#placeholder').hidden = false; $('#placeholder-text').textContent = '还没有会话。创建子代理后，这里会实时显示它的进度。'; }
     $('#live').className = 'live'; $('#connection').textContent = `已更新 ${clock(result.refreshedAt)}`;
     showError(result.errors.length ? `${result.errors.length} 个会话读取失败：${result.errors.map(e => `${e.id.slice(0, 8)} ${e.error}`).join('；')}` : '');
@@ -426,3 +413,5 @@ new ResizeObserver(() => { if (state.detail) renderLane(state.detail.agent, pair
 window.addEventListener('hashchange', () => { history.replaceState(null, '', location.pathname); setPaused(false); });
 bindLaneTips(); syncNotifyButton();
 refresh(); setInterval(refresh, 2000); setInterval(tick, 1000);
+// While the selected agent works, follow its live output more closely than the list.
+setInterval(() => { if (!state.paused && working.has(state.detail?.agent.status)) refreshDetail().catch(error => showError(error.message)); }, 800);

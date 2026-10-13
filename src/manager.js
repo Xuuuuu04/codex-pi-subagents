@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PiProcess } from './rpc-client.js';
+import { LiveStream } from './live-stream.js';
 import { Storage, processAlive } from './storage.js';
 import { MessageChannel } from './messages.js';
 import { MessageStore } from './message-store.js';
@@ -150,8 +151,10 @@ export class Manager extends EventEmitter {
       PI_SUBAGENT_POLICY: policyFile, PI_SUBAGENT_ID: r.id, PI_SUBAGENT_ENDPOINT: this.channel.endpoint, PI_SUBAGENT_TOKEN: agent.messageToken,
     } });
     r.piPid = agent.rpc.child.pid;
-    agent.rpc.on('event', event => this.onPiEvent(agent, event));
+    agent.live?.close(); agent.live = new LiveStream(path.join(this.storage.directory(r.id), 'live.json'));
+    agent.rpc.on('event', event => { agent.live.handle(event); this.onPiEvent(agent, event); });
     agent.rpc.on('stopped', error => {
+      agent.live.close();
       if (agent.closing) return;
       r.status = 'failed'; r.error = r.limitReason || error.message;
       this.channel.cancelAgent(r.id); this.event(agent, 'process_failed', { error: error.message }); this.release(agent.lock);
