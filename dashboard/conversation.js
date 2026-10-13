@@ -150,17 +150,40 @@ function userBubble(message, ctx) {
   } }));
   return el('div', { class: 'turn-user', title: fullDate(message.time) }, bubble);
 }
+/* ---------- 逐字显示：数据按批到达，这里按帧匀速放出，避免一顿一顿 ---------- */
+const typing = { shown: new Map(), target: new Map(), live: new Set() };
+let tailBuild = null;
+function revealed(key, text) {
+  typing.target.set(key, text.length); typing.live.add(key);
+  if (!typing.shown.has(key)) { if (typing.shown.size > 60) { typing.shown.clear(); typing.target.clear(); typing.target.set(key, text.length); } typing.shown.set(key, text.length > 300 ? text.length : 0); }
+  const shown = Math.min(typing.shown.get(key), text.length); typing.shown.set(key, shown);
+  return text.slice(0, shown);
+}
+/** 每帧推进一小步（积压越多越快），重画正在输出的尾部；返回是否有变化。 */
+function refreshTail() {
+  const old = document.querySelector('#records .live-tail'); if (!tailBuild || !old) return false;
+  let moved = false;
+  for (const key of typing.live) {
+    const target = typing.target.get(key); const shown = Math.min(typing.shown.get(key) ?? 0, target); const backlog = target - shown;
+    if (backlog > 0) { typing.shown.set(key, shown + Math.max(1, Math.ceil(backlog * 0.09))); moved = true; }
+  }
+  if (!moved) return false;
+  const next = tailBuild(); if (!next) return false;
+  morph(old, [...next.childNodes]); return true;
+}
 function liveTail(data, ctx, pendingCalls, lastTime) {
-  const tail = el('div', { class: 'live-tail' }); const live = data.live; const agent = data.agent;
+  typing.live = new Set(); const tail = el('div', { class: 'live-tail' }); const live = data.live; const agent = data.agent;
   if (agent.status === 'waiting') { tail.append(el('div', { class: 'step' }, icon('ask'), '暂停在提问上，等待所属聊天答复')); return tail; }
   if (!ctx.working) return null;
   if (live?.message) {
     const since = Date.parse(live.message.startedAt);
-    for (const block of live.message.blocks.filter(Boolean)) {
-      if (block.type === 'thinking') tail.append(el('div', { class: 'live-think' }, el('div', { class: 'step shimmer' }, icon('think'), '正在思考', el('span', { class: 'muted', 'data-since': since, text: shortDuration(Date.now() - since) })), block.text ? el('div', { class: 'think-text live' }, markdown(block.text.slice(-1600))) : null));
-      else if (block.type === 'text') tail.append(el('div', { class: 'live-text' }, markdown(block.text), el('span', { class: 'caret' })));
+    live.message.blocks.forEach((block, index) => {
+      if (!block) return;
+      const shown = block.type === 'toolCall' ? '' : revealed(`${ctx.agentId}:${live.message.startedAt}:${index}`, block.text);
+      if (block.type === 'thinking') tail.append(el('div', { class: 'live-think' }, el('div', { class: 'step shimmer' }, icon('think'), '正在思考', el('span', { class: 'muted', 'data-since': since, text: shortDuration(Date.now() - since) })), shown ? el('div', { class: 'think-text streaming' }, markdown(shown.slice(-1600))) : null));
+      else if (block.type === 'text') tail.append(el('div', { class: 'live-text' }, markdown(shown), el('span', { class: 'caret' })));
       else if (block.type === 'toolCall') tail.append(el('div', { class: 'step shimmer' }, icon('tool'), block.done ? `准备调用 ${block.name}` : `正在写 ${block.name || '工具'} 的参数`, el('span', { class: 'muted', text: `${block.text.length} 字` })));
-    }
+    });
     if (!live.message.blocks.filter(Boolean).length) tail.append(el('div', { class: 'step shimmer' }, icon('think'), '正在等待模型响应', el('span', { class: 'muted', 'data-since': since, text: shortDuration(Date.now() - since) })));
     return tail;
   }
@@ -186,7 +209,7 @@ function renderConversation(data, expanded) {
     if (message.role === 'user') { run = { user: message, steps: [] }; runs.push(run); }
     else if (message.role === 'assistant') { if (!run) { run = { user: null, steps: [] }; runs.push(run); } run.steps.push(message); }
   }
-  const convo = el('div', { class: 'convo' });
+  const convo = el('div', { class: 'convo' }); tailBuild = null;
   runs.forEach((r, index) => {
     const active = index === runs.length - 1 && (ctx.working || data.agent.status === 'waiting');
     if (r.user) convo.append(userBubble(r.user, ctx));
@@ -206,7 +229,7 @@ function renderConversation(data, expanded) {
       }
     }
     if (final?.thinking || final?.thinkingRedacted) body.append(thinkingRow(final, ctx));
-    if (active) { const tail = liveTail(data, ctx, pending > 0, r.steps.at(-1)?.time || r.user?.time); if (tail) body.append(tail); }
+    if (active) { const lastTime = r.steps.at(-1)?.time || r.user?.time; const waiting = pending > 0; const tail = liveTail(data, ctx, waiting, lastTime); if (tail) body.append(tail); tailBuild = () => liveTail(data, ctx, waiting, lastTime); }
     const start = Date.parse(r.user?.time || r.steps[0]?.startedAt || r.steps[0]?.time);
     const end = active ? Date.now() : Date.parse(last?.time || r.user?.time);
     if (body.childNodes.length) {

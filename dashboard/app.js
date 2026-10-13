@@ -51,6 +51,20 @@ function el(tag, props = {}, ...children) {
   node.append(...children.flat().filter(child => child != null && child !== false));
   return node;
 }
+/** 把新生成的节点合并进已有 DOM：只改变化的部分，已有节点（以及它们的转圈、闪光、滚动位置）原样保留，避免整块重建造成闪烁。 */
+function morph(parent, next) {
+  const old = [...parent.childNodes];
+  next.forEach((node, i) => old[i] ? patchNode(old[i], node) : parent.append(node));
+  for (const node of old.slice(next.length)) node.remove();
+}
+function patchNode(old, next) {
+  // 按钮带着只属于旧节点闭包的点击处理，直接换新的。
+  if (old.nodeType !== next.nodeType || old.nodeName !== next.nodeName || old.nodeName === 'BUTTON') { old.replaceWith(next); return; }
+  if (next.nodeType !== 1) { if (old.data !== next.data) old.data = next.data; return; }
+  for (const { name } of [...old.attributes]) if (!next.hasAttribute(name)) old.removeAttribute(name);
+  for (const { name, value } of [...next.attributes]) if (old.getAttribute(name) !== value) old.setAttribute(name, value);
+  morph(old, [...next.childNodes]);
+}
 function svg(tag, attrs = {}) { const node = document.createElementNS(SVG, tag); for (const [k, v] of Object.entries(attrs)) if (v != null) node.setAttribute(k, v); return node; }
 function glyph(d, cls = '') { const box = svg('svg', { viewBox: '0 0 24 24', class: cls, 'aria-hidden': 'true' }); for (const part of [d].flat()) box.append(svg('path', { d: part })); return box; }
 const paths = {
@@ -608,11 +622,24 @@ function renderRecords() {
   const tools = pairTools(data.agent.events);
   const [content, note] = state.tab === 'messages' ? conversationTab(data, expanded) : state.tab === 'tools' ? renderTools(tools) : state.tab === 'events' ? renderEvents(data.agent) : state.tab === 'result' ? renderResult(data.agent) : renderInfo(data.agent);
   records.classList.toggle('enter', fresh);
-  records.replaceChildren(...[content].flat());
-  $('#record-note').textContent = note;
+  if (fresh || state.tab !== 'messages') records.replaceChildren(...[content].flat()); else morph(records, [content].flat().map(node => typeof node === 'string' ? document.createTextNode(node) : node));
+  // 正在流出的思考和命令输出始终显示最新的一段。
+  for (const live of records.querySelectorAll('.think-text.streaming, .live-tail .term-body')) live.scrollTop = live.scrollHeight;
+  if (note !== $('#record-note').textContent) $('#record-note').textContent = note;
   box.scrollTop = follow ? box.scrollHeight : fresh ? 0 : scroll;
   syncJump();
 }
+
+// 逐字放出新到的文字：约 30 帧每秒，只重画正在输出的尾部；读者在底部时跟着滚。
+let typingFrame = 0;
+requestAnimationFrame(function pump(now) {
+  requestAnimationFrame(pump);
+  if (now - typingFrame < 32 || state.tab !== 'messages') return; typingFrame = now;
+  const box = $('#scroller'); const follow = nearBottom(box);
+  if (!refreshTail()) return;
+  for (const live of $('#records').querySelectorAll('.think-text.streaming')) live.scrollTop = live.scrollHeight;
+  if (follow) box.scrollTop = box.scrollHeight;
+});
 
 /* ---------- 实时速度 ---------- */
 // 正在生成时用逐字镜像的增长估算，结束后用会话记录里的实测值；估算按中文约 1.3 字、其他约 3.8 字符一个 token。

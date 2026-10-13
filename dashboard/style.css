@@ -451,7 +451,7 @@ pre.plain { background: none; padding: 0; max-height: none; font: 14.5px/1.8 var
 .think-row > summary:hover, .tool-item > summary:hover { color: var(--ink); }
 .think-text { margin: 2px 0 8px 23px; padding-left: 12px; border-left: 2px solid var(--line); color: var(--muted); font-size: 13.5px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 320px; overflow-y: auto; }
 .think-text .md { font-size: inherit; line-height: inherit; color: inherit; } .think-text .md p { margin: 4px 0; } .think-text strong { color: var(--ink-2); }
-.think-text.live { max-height: 200px; display: flex; flex-direction: column-reverse; }
+.think-text.streaming { max-height: 200px; }
 .tool-item[open] > :not(summary) { animation: fade-up .25s var(--ease-out); }
 .tool-item .verb { flex: none; }
 .tool-item .target { font: 12px var(--mono); color: var(--ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
