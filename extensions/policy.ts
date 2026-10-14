@@ -4,6 +4,7 @@ import { createBashToolDefinition, createReadToolDefinition, createWriteToolDefi
 import { fileOperation, runSandboxed, sandboxMode } from '../src/tool-sandbox.js';
 import { SpeedMeter } from '../src/speed-meter.js';
 import path from 'node:path';
+import { sandboxedReadOperations } from '../src/read-operations.js';
 
 /** Explicit tools only: filesystem and shell operations execute in OS-restricted subprocesses. */
 export default function (pi: ExtensionAPI) {
@@ -11,7 +12,7 @@ export default function (pi: ExtensionAPI) {
   const readFile = (file: string) => fileOperation(policy, 'read', file);
   const writeFile = async (file: string, value: string) => { await fileOperation(policy, 'write', file, value); };
   const access = async (file: string) => { await fileOperation(policy, 'access', file); };
-  pi.registerTool(createReadToolDefinition(policy.cwd, { operations: { readFile, access } }));
+  pi.registerTool(createReadToolDefinition(policy.cwd, { operations: sandboxedReadOperations(policy) }));
   pi.registerTool(createWriteToolDefinition(policy.cwd, { operations: { writeFile, mkdir: async () => {} } }));
   pi.registerTool(createEditToolDefinition(policy.cwd, { operations: { readFile, writeFile, access } }));
   // 开发模式要跑完整检查，单条命令最多 30 分钟；严格模式仍是 5 分钟。
