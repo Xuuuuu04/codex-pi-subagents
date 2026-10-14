@@ -53,9 +53,10 @@ export function sandboxProfile(policy) {
   if (owned.some(value => !inside(value, workspace))) throw new Error('Owned path resolves outside the workspace');
   const write = [...owned, policy.tempDir, '/dev/null', '/dev/tty'];
   const privateDirectories = ['.pi', '.codex', '.ssh'].map(value => path.join(os.homedir(), value)).filter(value => fs.existsSync(value));
-  // dyld must inspect the root directory when loading the shared cache; this grants only that literal path.
+  // Ancestor metadata is needed by realpath and SQLite; outside file contents remain unreadable.
+  // Controller-state and credential rules below keep their stricter metadata restrictions.
   return `(version 1) (allow default)
-(deny file-read* (require-not (require-any (literal "/") ${read.map(filter).join(' ')})))
+(deny file-read-data (require-not (require-any (literal "/") ${read.map(filter).join(' ')})))
 (deny file-write* (require-not (require-any ${write.map(filter).join(' ')})))
 ${privateDirectories.map(value => `(deny file-read* ${filter(value)}) (deny file-write* ${filter(value)})`).join('\n')}
 (deny file-read* (require-all ${filter(policy.stateRoot)} (require-not (require-any ${inside(canonicalPath(policy.cwd), canonicalPath(policy.stateRoot)) ? filter(policy.cwd) : ''} ${filter(policy.tempDir)}))))

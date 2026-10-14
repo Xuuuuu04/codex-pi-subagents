@@ -2,6 +2,24 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';import os from 'node:os';import path from 'node:path';
 import { fileOperation, runSandboxed } from '../src/tool-sandbox.js';
+test('strict permits ancestor metadata for real paths and persistent SQLite without exposing outside file contents', async t => {
+  const root=fs.mkdtempSync(path.join(os.tmpdir(),'pi-sqlite-test-'));
+  t.after(()=>fs.rmSync(root,{recursive:true,force:true}));
+  for(const name of ['work','outside','state','tmp']) fs.mkdirSync(path.join(root,name));
+  const cwd=path.join(root,'work');fs.mkdirSync(path.join(cwd,'output'));
+  fs.writeFileSync(path.join(root,'outside','private.txt'),'outside-content');
+  const policy={cwd,ownedPaths:['output'],tempDir:root+'/tmp',stateRoot:root+'/state',allowNetwork:false,sandboxMode:'strict'};
+  const script=`const fs=require('node:fs');const{DatabaseSync}=require('node:sqlite');
+    console.log('realpath:'+fs.realpathSync('.'));
+    let db=new DatabaseSync('output/probe.db');db.exec('CREATE TABLE probe(v); INSERT INTO probe VALUES(73)');db.close();
+    db=new DatabaseSync('output/probe.db');console.log('value:'+db.prepare('SELECT v FROM probe').get().v);db.close();
+    try{fs.readFileSync(${JSON.stringify(path.join(root,'outside','private.txt'))});process.exitCode=10}catch(e){console.log('outside:'+e.code)}
+    try{fs.writeFileSync(${JSON.stringify(path.join(root,'outside','new.txt'))},'bad');process.exitCode=11}catch(e){console.log('write:'+e.code)}`;
+  let output='';const result=await runSandboxed(policy,process.execPath,['-e',script],{onData:v=>output+=v});
+  assert.equal(result.exitCode,0,output);assert.ok(output.includes('value:73'),output);
+  assert.match(output,/outside:E(?:PERM|ACCES)/);assert.match(output,/write:E(?:PERM|ACCES)/);
+  assert.ok(!output.includes('outside-content'));assert.ok(!fs.existsSync(path.join(root,'outside','new.txt')));
+});
 test('file and shell tools allow owned writes and reject sibling writes, symlinks, state reads and network', async t => {
   const cwd=fs.mkdtempSync(path.join(os.tmpdir(),'pi-policy-test-'));t.after(()=>fs.rmSync(cwd,{recursive:true,force:true}));
   for(const name of ['src','other','state','tmp']) fs.mkdirSync(path.join(cwd,name));

@@ -65,6 +65,7 @@ Codex 调用 MCP → 私密 Unix socket → 独立管理器创建或控制 Pi �
 - 不自动合并、删除工作目录或部署。
 
 ## 已知的坑
+- strict外置工作区需要允许祖先路径元数据，Python与SQLite会先解析路径；目录外内容仍拒绝。stateRoot内部工作区仍受更严格的状态目录规则限制，不能声称所有路径都已通过。
 - 额度窗口按返回时长分类，缺失窗口表示未知；凭据续期由 Pi 负责，额度工具不改认证文件。
 - `agent_end` 后可能继续重试，最终结束要看 `agent_settled`。
 - Pi stdout 按 LF 切 JSONL；Unicode 分隔符可以出现在合法字符串里。
