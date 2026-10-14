@@ -7,7 +7,7 @@ import { observeTransport } from '../src/transport-diagnostics.js';
 test('records safe status/timing/cause codes, ignores other origins and private content', () => {
   const rows = []; let clock = 100;
   const stop = observeTransport('https://example.invalid', value => rows.push(value), { now: () => clock });
-  const request = { origin: 'https://example.invalid', headers: 'secret-header', body: 'secret-payload', path: '/secret' };
+  const request = { origin: 'https://example.invalid', bodyTimeout: 300000, headers: 'secret-header', body: 'secret-payload', path: '/secret' };
   const publish = (name, data) => channel(`undici:request:${name}`).publish(data);
   publish('create', { request });
   publish('create', { request: { origin: 'http://localhost:1' } });
@@ -21,6 +21,7 @@ test('records safe status/timing/cause codes, ignores other origins and private 
   assert.deepEqual(rows[2].codes, ['UND_ERR_BODY_TIMEOUT']);
   assert.equal(rows[1].elapsedMs, 300);
   assert.equal(rows[1].status, 200);
+  assert.equal(rows[0].bodyTimeoutMs, 300000);
   assert.ok(!JSON.stringify(rows).includes('secret'));
 });
 

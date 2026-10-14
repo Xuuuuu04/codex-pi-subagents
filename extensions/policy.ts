@@ -6,6 +6,7 @@ import { SpeedMeter } from '../src/speed-meter.js';
 import path from 'node:path';
 import { sandboxedReadOperations } from '../src/read-operations.js';
 import { observeTransport } from '../src/transport-diagnostics.js';
+import { providerFetch } from '../src/provider-fetch.js';
 
 /** Explicit tools only: filesystem and shell operations execute in OS-restricted subprocesses. */
 export default function (pi: ExtensionAPI) {
@@ -25,7 +26,17 @@ export default function (pi: ExtensionAPI) {
   let meter: SpeedMeter | null = null;
   let stopTransportDiagnostics: (() => void) | null = null;
   let transportDiagnosticWriteFailed = false;
-  pi.on('session_start', async () => {
+  let closeProviderFetch: (() => Promise<void>) | null = null;
+  let previousFetch: typeof globalThis.fetch | null = null;
+  let scopedFetch: typeof globalThis.fetch | null = null;
+  pi.on('session_start', async (_event, context) => {
+    if (context.model?.provider === 'step-relay') {
+      previousFetch = globalThis.fetch;
+      const transport = providerFetch(new URL(context.model.baseUrl).origin);
+      scopedFetch = transport.fetch;
+      globalThis.fetch = scopedFetch;
+      closeProviderFetch = transport.close;
+    }
     meter = new SpeedMeter(path.join(path.dirname(process.env.PI_SUBAGENT_POLICY!), 'speed.json'));
     pi.setActiveTools(tools);
     const response = await fetch(process.env.PI_SUBAGENT_ENDPOINT!, { method: 'POST', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.PI_SUBAGENT_TOKEN}` }, body: JSON.stringify({ action: 'policy_ready', agentId: process.env.PI_SUBAGENT_ID }) });
@@ -67,5 +78,9 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on('provider_stream_event', event => { meter?.event(event.data); });
   pi.on('message_end', event => { if (event.message?.role === 'assistant') meter?.finish(event.message.usage); });
-  pi.on('session_shutdown', () => { meter?.close(); stopTransportDiagnostics?.(); });
+  pi.on('session_shutdown', async () => {
+    meter?.close(); stopTransportDiagnostics?.();
+    if (scopedFetch && globalThis.fetch === scopedFetch && previousFetch) globalThis.fetch = previousFetch;
+    await closeProviderFetch?.();
+  });
 }

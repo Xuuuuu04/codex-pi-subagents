@@ -19,5 +19,5 @@
     "verify:live": "node scripts/verify-live.js",
     "wait-events": "node scripts/wait-events.js"
   },
-  "dependencies": { "@modelcontextprotocol/sdk": "1.26.0", "zod": "3.25.76" }
+  "dependencies": { "@modelcontextprotocol/sdk": "1.26.0", "undici": "7.30.0", "zod": "3.25.76" }
 }

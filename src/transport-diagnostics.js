@@ -14,7 +14,9 @@ export function observeTransport(origin, write, { now = Date.now } = {}) {
     if (String(request.origin) !== origin) return;
     const record = { id: ++sequence, start: now() };
     requests.set(request, record);
-    write({ event: 'request_start', id: record.id, at: record.start });
+    const data = { event: 'request_start', id: record.id, at: record.start };
+    if (Number.isSafeInteger(request.bodyTimeout) && request.bodyTimeout >= 0) data.bodyTimeoutMs = request.bodyTimeout;
+    write(data);
   });
   const event = (type, { request, response, error }) => {
     const record = requests.get(request);
