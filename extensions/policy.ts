@@ -5,6 +5,7 @@ import { fileOperation, runSandboxed, sandboxMode } from '../src/tool-sandbox.js
 import { SpeedMeter } from '../src/speed-meter.js';
 import path from 'node:path';
 import { sandboxedReadOperations } from '../src/read-operations.js';
+import { observeTransport } from '../src/transport-diagnostics.js';
 
 /** Explicit tools only: filesystem and shell operations execute in OS-restricted subprocesses. */
 export default function (pi: ExtensionAPI) {
@@ -22,6 +23,8 @@ export default function (pi: ExtensionAPI) {
   const tools = ['read', 'write', 'edit', 'bash', 'agent_message', 'ask_parent'];
   // 实时输出速度写在本代理目录，面板服务读取后推送给页面；只计数，不保存内容。
   let meter: SpeedMeter | null = null;
+  let stopTransportDiagnostics: (() => void) | null = null;
+  let transportDiagnosticWriteFailed = false;
   pi.on('session_start', async () => {
     meter = new SpeedMeter(path.join(path.dirname(process.env.PI_SUBAGENT_POLICY!), 'speed.json'));
     pi.setActiveTools(tools);
@@ -30,6 +33,17 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on('tool_call', event => tools.includes(event.toolName) ? undefined : { block: true, reason: 'Tool is outside this agent policy', terminate: true });
   pi.on('before_provider_request', async (event, context) => {
+    if (context.model?.provider === 'step-relay' && !stopTransportDiagnostics) {
+      const origin = new URL(context.model.baseUrl).origin;
+      const destination = path.join(path.dirname(process.env.PI_SUBAGENT_POLICY!), 'transport-diagnostics.jsonl');
+      stopTransportDiagnostics = observeTransport(origin, value => {
+        try { fs.appendFileSync(destination, JSON.stringify(value) + '\n'); }
+        catch {
+          if (!transportDiagnosticWriteFailed) process.stderr.write('Transport diagnostics could not be saved.\n');
+          transportDiagnosticWriteFailed = true;
+        }
+      });
+    }
     try {
       const response = await fetch(process.env.PI_SUBAGENT_ENDPOINT!, { method: 'POST', signal: AbortSignal.timeout(10000), headers: { 'content-type': 'application/json', authorization: `Bearer ${process.env.PI_SUBAGENT_TOKEN}` },
         body: JSON.stringify({ action: 'reserve_request', agentId: process.env.PI_SUBAGENT_ID, messageId: randomUUID() }) });
@@ -53,5 +67,5 @@ export default function (pi: ExtensionAPI) {
   });
   pi.on('provider_stream_event', event => { meter?.event(event.data); });
   pi.on('message_end', event => { if (event.message?.role === 'assistant') meter?.finish(event.message.usage); });
-  pi.on('session_shutdown', () => { meter?.close(); });
+  pi.on('session_shutdown', () => { meter?.close(); stopTransportDiagnostics?.(); });
 }
