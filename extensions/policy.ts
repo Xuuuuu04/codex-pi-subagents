@@ -60,7 +60,7 @@ export default function (pi: ExtensionAPI) {
         body: JSON.stringify({ action: 'reserve_request', agentId: process.env.PI_SUBAGENT_ID, messageId: randomUUID() }) });
       if (!response.ok) process.exit(77);
       const result = await response.json();
-      if (result.warning) pi.sendUserMessage(result.warning, { deliverAs: 'steer' }).catch(() => {});
+      if (result.warning) pi.sendUserMessage(result.warning, { deliverAs: 'steer' });
       const payload = event.payload as Record<string, unknown>;
       const api = context.model?.api;
       if (api === 'openai-responses' || api === 'openai-codex-responses') payload.max_output_tokens = Math.min(Number(payload.max_output_tokens) || result.maxOutputTokens, result.maxOutputTokens);
