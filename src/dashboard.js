@@ -24,6 +24,7 @@ const ASSET_FILES = new Map([
   ['/app.js', ['app.js', 'text/javascript']],
   ['/dom.js', ['dom.js', 'text/javascript']],
   ['/panels.js', ['panels.js', 'text/javascript']],
+  ['/changes.js', ['changes.js', 'text/javascript']],
   ['/dialogs.js', ['dialogs.js', 'text/javascript']],
   ['/settings.js', ['settings.js', 'text/javascript']],
   ['/settings-views.js', ['settings-views.js', 'text/javascript']],
@@ -143,12 +144,17 @@ function streamAgentEvents(root, data, request, response, cleanups) {
     if (closed || debounceTimer) return;
     debounceTimer = setTimeout(() => { debounceTimer = null; pushIfChanged(); }, 50);
   };
+  const onWatch = (_eventType, filename) => {
+    const name = filename ? String(filename) : '';
+    if (name && (/(^|[/\\])(live|speed)\.json(\..*\.tmp)?$/.test(name) || /\.tmp$/.test(name))) return;
+    schedulePush();
+  };
   const attachWatcher = () => {
     if (closed || watcher || !fs.existsSync(root)) return;
-    try { watcher = fs.watch(root, { recursive: true }, schedulePush); }
+    try { watcher = fs.watch(root, { recursive: true }, onWatch); }
     catch (error) {
       if (error?.code === 'ERR_FEATURE_UNAVAILABLE_ON_PLATFORM') {
-        try { watcher = fs.watch(root, schedulePush); } catch (fallbackError) { if (fallbackError?.code !== 'ENOENT') throw fallbackError; }
+        try { watcher = fs.watch(root, onWatch); } catch (fallbackError) { if (fallbackError?.code !== 'ENOENT') throw fallbackError; }
       } else if (error?.code !== 'ENOENT') throw error;
     }
     watcher?.on('error', error => {
@@ -248,8 +254,8 @@ function readJsonBody(request, limit = 64000) {
 
 async function handlePostRequest({ request, url, site, data, root, agentDir, backupDir, executable, autoRefreshCatalog, send }) {
   if (request.headers['x-pi-dashboard'] !== '1' || site === 'cross-site') { send(403, { error: 'Invalid request' }); return; }
-  const write = /^\/api\/agents\/([^/]+)\/(mark|move)$/.exec(url.pathname);
-  const allowed = write || ['/api/groups', '/api/settings', '/api/settings/provider-auth', '/api/settings/check-auth'].includes(url.pathname);
+  const write = /^\/api\/agents\/([^/]+)\/(mark|move|meta)$/.exec(url.pathname);
+  const allowed = write || ['/api/agents/archive', '/api/agents/batch-mark', '/api/groups', '/api/settings', '/api/settings/provider-auth', '/api/settings/check-auth'].includes(url.pathname);
   if (!allowed) { send(404, { error: 'Not found' }); return; }
   try {
     const value = await readJsonBody(request);
@@ -258,9 +264,12 @@ async function handlePostRequest({ request, url, site, data, root, agentDir, bac
       return;
     }
     if (write) {
-      send(200, write[2] === 'mark' ? data.mark(write[1], value.status ?? null) : data.move(write[1], value.group ?? null));
+      const [, id, op] = write;
+      send(200, op === 'mark' ? data.mark(id, value.status ?? null) : op === 'move' ? data.move(id, value.group ?? null) : data.editMeta(id, value));
       return;
     }
+    if (url.pathname === '/api/agents/archive') { send(200, data.archive(value.agentIds ?? value.ids ?? value.agentId ?? value.id, value.archived === undefined ? true : value.archived)); return; }
+    if (url.pathname === '/api/agents/batch-mark') { send(200, data.batchMark(value.agentIds ?? value.ids, value.status ?? null)); return; }
     if (url.pathname === '/api/groups') { send(200, data.renameGroup(value.key, value.name ?? null)); return; }
     if (url.pathname === '/api/settings') {
       saveModelSettings(root, value, { agentDir, backupDir });
@@ -304,7 +313,7 @@ async function handlePostRequest({ request, url, site, data, root, agentDir, bac
       return;
     }
   } catch (error) {
-    send(error.status || 400, { error: error.message });
+    send(error.code === 'ENOENT' ? 404 : (error.status || 400), { error: error.message });
   }
 }
 
@@ -343,6 +352,8 @@ function handleGetRequest({ request, response, url, root, data, cleanups, readCa
   }
   const stream = /^\/api\/agents\/([^/]+)\/speed$/.exec(url.pathname);
   if (stream) { streamSpeed(path.join(data.directory(stream[1]), 'speed.json'), request, response, cleanups); return; }
+  const liveMatch = /^\/api\/agents\/([^/]+)\/live$/.exec(url.pathname);
+  if (liveMatch) { send(200, data.liveState(liveMatch[1])); return; }
   const match = /^\/api\/agents\/([^/]+)$/.exec(url.pathname);
   if (match) { send(200, data.detail(match[1])); return; }
   send(404, { error: 'Not found' });

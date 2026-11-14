@@ -35,12 +35,13 @@ export const busyStatuses = new Set(['starting', 'running', 'finishing']);
 export const attention = new Set(['waiting', 'failed', 'disconnected']);
 
 export const filters = [
-  { key: 'all', title: '全部', match: () => true },
-  { key: 'working', title: '工作中', match: s => working.has(s) },
-  { key: 'waiting', title: '待答复', match: s => s === 'waiting' },
-  { key: 'completed', title: '已完成', match: s => s === 'completed' },
-  { key: 'problem', title: '异常', match: s => s === 'failed' || s === 'disconnected' },
-  { key: 'closed', title: '已关闭', match: s => s === 'closed' },
+  { key: 'all', title: '全部', match: (_, a) => !a?.archived },
+  { key: 'working', title: '工作中', match: (s, a) => !a?.archived && working.has(s) },
+  { key: 'waiting', title: '待答复', match: (s, a) => !a?.archived && s === 'waiting', secondary: true },
+  { key: 'completed', title: '已完成', match: (s, a) => !a?.archived && s === 'completed' },
+  { key: 'problem', title: '异常', match: (s, a) => !a?.archived && (s === 'failed' || s === 'disconnected'), secondary: true },
+  { key: 'closed', title: '已关闭', match: (s, a) => !a?.archived && s === 'closed', secondary: true },
+  { key: 'archived', title: '已归档', match: (_, a) => Boolean(a?.archived), secondary: true },
 ];
 
 export const eventTypes = {
@@ -175,12 +176,17 @@ export const paths = {
   refresh: 'M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4',
   repo: 'M5 4h12a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2zM5 18a2 2 0 0 1 2-2h12',
   empty: 'M4 7h16v13H4zM9 11h6M8 3h8l4 4H4z',
+  pin: 'M9 4h6l1 5 2.5 2v2H5.5v-2L8 9zM12 13v7',
+  archive: 'M3.5 5h17v3.5h-17zM5 8.5v10a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-10M10 12.5h4',
+  unarchive: 'M3.5 5h17v3.5h-17zM5 8.5v10a1.5 1.5 0 0 0 1.5 1.5h11a1.5 1.5 0 0 0 1.5-1.5v-10M12 16v-5M9.5 13.5 12 11l2.5 2.5',
+  note: 'M5 4.5h10l4 4v11a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-14a1 1 0 0 1 1-1zM14.5 4.5v4h4M8 12h8M8 15.5h5',
 };
 
 export const ms = value => value ? Date.parse(value) : NaN;
 export const clock = value => value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
 export const fullDate = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
 export const modelName = agent => !agent?.model ? '未知模型' : typeof agent.model === 'string' ? agent.model.replace('/', ' / ') : `${agent.model.provider || '未知服务'} / ${agent.model.model || '未知模型'}`;
+export const shortModel = agent => (!agent?.model ? '' : typeof agent.model === 'string' ? agent.model.split('/').pop() : agent.model.model || '').replace(/^gpt-/i, 'GPT-');
 
 export function duration(milliseconds) {
   if (!Number.isFinite(milliseconds) || milliseconds < 0) return '—';
@@ -262,16 +268,25 @@ export function hostMeta(host) {
 }
 
 let toastTimer = null;
-export function showToast(text) {
+export function showToast(text, action = null) {
   const t = $('#toast');
   if (!t) return;
-  t.textContent = text;
+  mount(t, el('span', { text }), action ? el('button', {
+    type: 'button',
+    class: 'toast-act',
+    text: action.label,
+    onclick: () => {
+      clearTimeout(toastTimer);
+      t.hidden = true;
+      Promise.resolve(action.run()).catch(err => showToast(err?.message || '操作失败'));
+    },
+  }) : null);
   t.hidden = false;
   t.style.animation = 'none';
   void t.offsetWidth;
   t.style.animation = '';
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { t.hidden = true; }, 2100);
+  toastTimer = setTimeout(() => { t.hidden = true; }, action ? 4500 : 2200);
 }
 
 export async function copyText(text, message = '已复制') {

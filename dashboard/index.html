@@ -27,7 +27,7 @@
 
       <label class="search">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 4 4"/></svg>
-        <input id="search" type="search" placeholder="搜索会话、模型或目录" aria-label="搜索会话">
+        <input id="search" type="search" placeholder="搜索名称、备注、模型或目录" aria-label="搜索会话">
         <kbd>/</kbd>
       </label>
 
@@ -70,6 +70,10 @@
         <div class="title-line">
           <span class="dot" id="d-dot"></span>
           <h2 id="d-name">Pi 调度台</h2>
+          <span class="d-badges" id="d-badges" hidden></span>
+          <button type="button" class="icon-btn tiny" id="d-edit" title="编辑会话 (E)" hidden>
+            <svg viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>
+          </button>
           <span class="d-model" id="d-model"></span>
           <button type="button" class="d-host" id="d-host" hidden></button>
         </div>
@@ -129,16 +133,25 @@
       </header>
       <div class="panel-body" id="panel-body">
         <div class="pview" data-pview="overview">
-          <section class="card status-card" id="p-status"></section>
-          <section class="card"><header class="card-head"><h3>实时速度</h3><span class="card-meta" id="speed-meta"></span></header><div id="p-speed"></div></section>
-          <section class="card">
-            <header class="card-head"><h3>时间线</h3><span class="card-meta" id="axis-mid"></span></header>
-            <div class="lane-wrap" id="lane-wrap"><svg id="lane" role="img" aria-label="会话时间线"></svg></div>
-            <div class="axis-labels"><span id="axis-start"></span><span id="axis-end"></span></div>
-            <div class="legend"><span class="k-tool">工具</span><span class="k-err">失败</span><span class="k-comm">通信</span><span class="k-life">阶段</span></div>
+          <section class="p-sec status-sec" id="p-status"></section>
+          <section class="p-sec" id="p-telemetry"></section>
+          <section class="p-sec">
+            <header class="sec-head"><h3>输出速度</h3><span class="sec-meta" id="speed-meta"></span></header>
+            <div id="p-speed"></div>
           </section>
-          <section class="card"><header class="card-head"><h3>用量</h3></header><dl class="figures" id="d-figures"></dl></section>
-          <section class="card" id="d-report" hidden><header class="card-head"><h3>最近报告</h3></header><div class="p-report"></div></section>
+          <section class="p-sec">
+            <header class="sec-head"><h3>执行时间线</h3><span class="sec-meta" id="axis-mid"></span></header>
+            <div class="lane-wrap" id="lane-wrap"><svg id="lane" role="img" aria-label="会话时间线"></svg></div>
+            <div class="lane-foot">
+              <span id="axis-start"></span>
+              <div class="legend"><span class="k-tool">工具</span><span class="k-err">失败</span><span class="k-comm">通信</span><span class="k-life">阶段</span></div>
+              <span id="axis-end"></span>
+            </div>
+          </section>
+          <section class="p-sec" id="d-report" hidden>
+            <header class="sec-head"><h3>最近汇报</h3><span class="sec-meta" id="report-hint">点击展开</span></header>
+            <div class="p-report"></div>
+          </section>
         </div>
         <div class="pview" data-pview="context" hidden><div id="p-context"></div></div>
         <div class="pview" data-pview="changes" hidden><div id="p-changes"></div></div>
@@ -159,6 +172,7 @@
       </div>
     </form>
   </dialog>
+  <dialog class="dialog" id="edit-dialog"></dialog>
   <dialog class="dialog" id="sys-dialog"></dialog>
   <dialog class="dialog" id="settings-dialog"></dialog>
   <dialog class="dialog" id="help-dialog">
@@ -171,13 +185,15 @@
         <div class="shortcut-list">
           <div class="kv-row"><span><kbd>/</kbd></span><span>聚焦左侧搜索框</span></div>
           <div class="kv-row"><span><kbd>j</kbd> / <kbd>k</kbd></span><span>切换下一条 / 上一条子代理</span></div>
+          <div class="kv-row"><span><kbd>e</kbd></span><span>编辑当前会话（名称、分组、备注、置顶）</span></div>
+          <div class="kv-row"><span><kbd>a</kbd></span><span>归档或取消归档当前已结束会话</span></div>
           <div class="kv-row"><span><kbd>[</kbd> / <kbd>]</kbd></span><span>收起或展开左栏 / 右侧概况面板</span></div>
           <div class="kv-row"><span><kbd>p</kbd></span><span>暂停或继续实时更新</span></div>
           <div class="kv-row"><span><kbd>,</kbd></span><span>打开模型、Key 与子代理设置</span></div>
           <div class="kv-row"><span><kbd>?</kbd></span><span>打开快捷键说明</span></div>
           <div class="kv-row"><span><kbd>Esc</kbd></span><span>关闭弹窗、菜单或清空搜索</span></div>
         </div>
-        <p class="muted help-note">面板默认只读展示子代理实时对话、思考与改动；分组和手动标记仅保存在面板自有文件，设置弹窗修改凭据与模型配置前会先做 0600 备份。</p>
+        <p class="muted help-note">面板默认只读展示子代理实时对话、思考与改动；编辑、归档、分组和手动标记仅保存在面板自有文件，设置弹窗修改凭据与模型配置前会先做 0600 备份。</p>
       </div>
     </div>
   </dialog>

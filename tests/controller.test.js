@@ -21,3 +21,28 @@ test('bridge reports which parent session it belongs to, from the client environ
   assert.equal(parentIdentity({ CODEX_THREAD_ID: 'thread-1', CLAUDE_CODE_SESSION_ID: 'abc' }).kind, 'codex');
   assert.equal(parentIdentity({}).kind, 'unknown');
 });
+
+test('controller watch long-polls quietly when idle and wakes immediately when a new agent spawns', async t => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-controller-wake-'));
+  const root = cwd + '/state';
+  const executable = cwd + '/fake-pi';
+  fs.writeFileSync(executable, `#!/bin/sh\nexec '${process.execPath}' '${fakePi}' "$@"\n`, { mode: 0o700 });
+  const client = await connectController({ root, executable });
+  const seen = [];
+  client.on('event', ev => seen.push(ev));
+  client.watch();
+  t.after(async () => {
+    await client.close().catch(() => {});
+    try { process.kill(client.info.pid, 'SIGTERM'); } catch (e) { if (e.code !== 'ESRCH') throw e; }
+    for (let i = 0; i < 40 && fs.existsSync(root + '/controller.lock'); i++) await pause(30);
+    fs.rmSync(cwd, { recursive: true, force: true });
+  });
+  await pause(120);
+  const t0 = Date.now();
+  const spawned = await client.spawn({ cwd, prompt: 'OK', provider: 'fake', model: 'cheap', ownedPaths: ['src'], workspaceMode: 'shared' });
+  for (let i = 0; i < 50 && !seen.some(ev => ev.agentId === spawned.id && ev.type === 'settled'); i++) {
+    await pause(20);
+  }
+  assert.ok(Date.now() - t0 < 2000, 'watch woke immediately without waiting for 20s poll timeout');
+  assert.ok(seen.some(ev => ev.agentId === spawned.id && ev.type === 'settled'));
+});

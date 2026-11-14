@@ -1,10 +1,22 @@
 import {
   $, el, svg, glyph, paths, labels, working, busyStatuses, eventTypes, commTypes, badTypes, lifeTypes,
-  ms, clock, fullDate, duration, shortDuration, ago, tokens, cost, modelName, elapsedOf,
+  ms, clock, fullDate, duration, shortDuration, ago, tokens, cost, modelName, shortModel, elapsedOf,
   agentHost, hostMeta, agentSessionId, copyText, replyPayload, store, mount,
 } from './dom.js';
 import { areaChart, gauge } from './charts.js';
 import { markdown, diffStats } from './conversation.js';
+
+const shortPath = p => !p ? '—' : p.replace(/\/+$/, '').split('/').slice(-2).join('/') || p;
+
+function propRow(label, nodes, copyVal, copyMsg) {
+  if (!copyVal) return el('div', { class: 'prop-row' }, el('span', { class: 'prop-k', text: label }), el('span', { class: 'prop-v' }, nodes));
+  return el('button', {
+    type: 'button',
+    class: 'prop-row copyable',
+    title: `点击复制：${copyVal}`,
+    onclick: () => copyText(copyVal, copyMsg),
+  }, el('span', { class: 'prop-k', text: label }), el('span', { class: 'prop-v' }, nodes), glyph(paths.copy, 'prop-copy'));
+}
 
 export function pairTools(events = []) {
   const open = new Map();
@@ -75,13 +87,141 @@ export function changedFiles(data) {
   return files;
 }
 
+export function clearHead(hasAgents) {
+  $('#d-dot').className = 'dot';
+  $('#d-name').textContent = 'Pi 调度台';
+  $('#d-name').title = '';
+  $('#d-model').textContent = '';
+  if ($('#d-badges')) { $('#d-badges').hidden = true; $('#d-badges').replaceChildren(); }
+  if ($('#d-edit')) { $('#d-edit').hidden = true; $('#d-edit').onclick = null; }
+  $('#d-host').hidden = true;
+  $('#d-host').onclick = null;
+  $('#placeholder').hidden = false;
+  $('#records').replaceChildren();
+  $('#dock').hidden = true;
+  $('#placeholder-text').textContent = hasAgents ? '当前筛选下没有可显示的会话。' : '还没有会话。创建子代理后，这里会实时显示它的进度。';
+}
+
+function renderStatusCard(agent, actions, host, sid, active) {
+  const card = $('#p-status');
+  const cardKey = JSON.stringify([
+    agent.id, agent.status, agent.name, agent.rawName, agent.title, agent.note,
+    agent.pinned, agent.archived, agent.marked, agent.movedTo, agent.watcherActive, agent.cwd,
+    agent.workspaceMode, agent.thinking, agent.temporaryModel, agent.ownedPaths?.length,
+    agent.callback?.antigravityDeliveredSeq, sid,
+  ]);
+  if (card.dataset.key === cardKey) return;
+  card.dataset.key = cardKey;
+  mount(card,
+    el('div', { class: 'p-bar' },
+      el('span', { class: `pill ${agent.status}` }, el('span', { class: `dot ${agent.status}` }), labels[agent.status] || agent.status),
+      el('span', { class: 'p-time' }, active ? '已用 ' : '用时 ', el('b', { id: 'p-elapsed', text: duration(elapsedOf(agent)) })),
+      el('span', { class: 'ago', 'data-ago': agent.updatedAt, text: ago(agent.updatedAt) }),
+      el('div', { class: 'p-acts' },
+        el('button', { type: 'button', class: 'icon-btn tiny', title: '编辑会话 (E)', onclick: () => actions.onEdit?.(agent) }, glyph(paths.pen)),
+        el('button', { type: 'button', class: 'icon-btn tiny', 'aria-pressed': String(Boolean(agent.pinned)), title: agent.pinned ? '取消置顶' : '置顶会话', onclick: () => actions.onPin?.(agent) }, glyph(paths.pin)),
+        el('button', {
+          type: 'button',
+          class: 'icon-btn tiny',
+          'aria-pressed': String(Boolean(agent.archived)),
+          disabled: active && !agent.archived,
+          title: active && !agent.archived ? '运行或等待中的会话不可归档' : agent.archived ? '取消归档 (A)' : '归档会话 (A)',
+          onclick: () => actions.onArchive?.([agent.id], !agent.archived, agent.name || agent.id.slice(0, 8)),
+        }, glyph(agent.archived ? paths.unarchive : paths.archive)),
+      ),
+    ),
+    agent.note
+      ? el('button', { type: 'button', class: 'p-note', title: '点击修改备注', onclick: () => actions.onEdit?.(agent) }, glyph(paths.note), el('span', { text: agent.note }))
+      : el('button', { type: 'button', class: 'p-note-add', onclick: () => actions.onEdit?.(agent) }, glyph(paths.plus), '添加会话备注…'),
+    el('div', { class: 'p-props' },
+      agent.title && agent.rawName && agent.title !== agent.rawName ? propRow('原名', el('code', { text: agent.rawName })) : null,
+      propRow('模型', [
+        el('code', { text: shortModel(agent) || modelName(agent) }),
+        el('span', { class: 'prop-tag', text: `思考 ${agent.thinking || '默认'}` }),
+        agent.temporaryModel ? el('span', { class: 'prop-tag warn', text: '临时' }) : null,
+      ]),
+      sid ? propRow('宿主', [
+        el('span', { class: `prop-tag ${host.cls}`, text: host.short || host.label }),
+        el('code', { text: sid.slice(0, 8) }),
+        agent.watcherActive
+          ? el('span', { class: 'prop-tag watch', text: '监听中' })
+          : agent.callback?.enabled ? el('span', { class: 'prop-tag', text: `回调 #${agent.callback.antigravityDeliveredSeq || 0}` }) : null,
+      ], sid, '已复制父会话编号') : null,
+      agent.cwd ? propRow('工作区', [
+        el('code', { text: shortPath(agent.cwd) }),
+        agent.workspaceMode ? el('span', { class: 'prop-tag', text: agent.workspaceMode === 'worktree' ? '独立工作树' : '共享目录' }) : null,
+      ], agent.cwd, '已复制工作目录') : null,
+      propRow('身份', [
+        el('code', { text: `${agent.id.slice(0, 8)}…${agent.id.slice(-4)}` }),
+        agent.marked ? el('span', { class: 'prop-tag', text: '手动标记' }) : null,
+        agent.archived ? el('span', { class: 'prop-tag', text: '已归档' }) : null,
+      ], agent.id, '已复制会话身份'),
+      agent.ownedPaths?.length ? propRow('范围', el('span', { class: 'muted', text: `限定 ${agent.ownedPaths.length} 个路径` })) : null,
+    ),
+  );
+}
+
+function renderTelemetryCard(data, agent, tools, actions) {
+  const u = agent.usage || {};
+  const errors = tools.calls.filter(c => c.isError).length;
+  const cacheBase = (u.input || 0) + (u.cacheRead || 0);
+  const ctx = data.context;
+  const win = ctx?.contextWindow || agent.contextWindow;
+  const used = ctx?.used || 0;
+  const pct = win && used ? Math.min(100, Math.round(used / win * 100)) : null;
+  const tele = $('#p-telemetry');
+  const teleKey = JSON.stringify([agent.id, u.input, u.output, u.cacheRead, u.reportedCost, tools.calls.length, errors, agent.sequence, used, win]);
+  if (!tele || tele.dataset.key === teleKey) return;
+  tele.dataset.key = teleKey;
+  const fill = el('i');
+  fill.style.width = `${pct ?? 0}%`;
+  fill.style.background = pct > 85 ? 'var(--fail)' : pct > 65 ? 'var(--wait)' : 'var(--brand)';
+  const cells = [
+    ['输入', tokens(u.input)],
+    ['输出', tokens(u.output)],
+    ['缓存命中', cacheBase ? `${Math.round((u.cacheRead || 0) / cacheBase * 100)}%` : '0%', u.cacheRead ? tokens(u.cacheRead) : null],
+    ['工具调用', String(tools.calls.length), errors ? `${errors} 失败` : null, errors > 0],
+  ];
+  mount(tele,
+    el('button', { type: 'button', class: 'ctx-inline', title: '查看上下文构成与增长详情', onclick: () => actions.onSwitchTab?.('context') },
+      el('div', { class: 'ctx-inline-head' },
+        el('span', { class: 'ctx-inline-k', text: '上下文水位' }),
+        el('span', { class: 'ctx-inline-v mono', text: used ? `${tokens(used)}${win ? ` / ${tokens(win)} · ${pct}%` : ''}` : win ? `窗口 ${tokens(win)}` : '暂无请求' }),
+        glyph(paths.chevron, 'ctx-arrow'),
+      ),
+      win ? el('div', { class: 'ctx-bar' }, fill) : null,
+    ),
+    el('dl', { class: 'metric-grid' }, cells.map(([name, val, extra, bad]) =>
+      el('div', {}, el('dt', { text: name }), el('dd', { class: bad ? 'bad' : '' }, val, extra ? el('small', { text: extra }) : null)),
+    )),
+    el('div', { class: 'metric-foot' },
+      el('span', { title: '模型服务返回值，非真实扣费' }, '上报 ', el('b', { text: cost(u.reportedCost) })),
+      el('span', {}, '事件 ', el('b', { text: `#${agent.sequence ?? 0}` })),
+    ),
+  );
+}
+
 export function renderHead(data, tools, state) {
   const agent = data.agent;
+  const actions = state.actions || {};
   const host = hostMeta(agentHost(agent));
   const sid = agentSessionId(agent);
+  const active = working.has(agent.status);
   $('#d-dot').className = `dot ${agent.status}`;
   $('#d-name').textContent = agent.name || agent.id;
+  $('#d-name').title = agent.title && agent.rawName && agent.title !== agent.rawName ? `原名：${agent.rawName}` : '';
   $('#d-model').textContent = modelName(agent);
+
+  const badges = $('#d-badges');
+  if (badges) {
+    badges.hidden = !agent.pinned && !agent.archived;
+    mount(badges,
+      agent.pinned ? el('span', { class: 'badge badge-warn', text: '已置顶' }) : null,
+      agent.archived ? el('span', { class: 'badge badge-dim', text: '已归档' }) : null,
+    );
+  }
+  const editBtn = $('#d-edit');
+  if (editBtn) { editBtn.hidden = false; editBtn.onclick = () => actions.onEdit?.(agent); }
 
   const hostBtn = $('#d-host');
   if (sid) {
@@ -95,60 +235,27 @@ export function renderHead(data, tools, state) {
     hostBtn.onclick = null;
   }
 
-  const chips = [
-    ['模型', agent.model?.model || '未知'],
-    ['思考', agent.thinking || '默认'],
-    host.short && ['宿主', host.label],
-    agent.workspaceMode && ['目录', agent.workspaceMode === 'worktree' ? '独立工作树' : agent.workspaceMode === 'shared' ? '共享目录' : agent.workspaceMode],
-    agent.ownedPaths?.length && ['范围', `${agent.ownedPaths.length} 项`],
-    agent.callback?.enabled && ['回调', `#${agent.callback.antigravityDeliveredSeq || 0}`],
-    agent.watcherActive && ['监听', '活跃'],
-    agent.temporaryModel && ['临时模型', '结束后恢复'],
-    agent.marked && ['标记', '手动'],
-  ].filter(Boolean);
-
-  const card = $('#p-status');
-  const cardKey = JSON.stringify([agent.id, agent.status, chips, agent.cwd, sid]);
-  if (card.dataset.key !== cardKey) {
-    card.dataset.key = cardKey;
-    mount(card,
-      el('div', { class: 'status-top' }, el('span', { class: `pill ${agent.status}` }, el('span', { class: `dot ${agent.status}` }), labels[agent.status] || agent.status), el('span', { class: 'ago', 'data-ago': agent.updatedAt, text: ago(agent.updatedAt) })),
-      el('div', { class: 'big-clock' }, el('span', { id: 'p-elapsed', text: duration(elapsedOf(agent)) }), el('small', { text: working.has(agent.status) ? '已用时' : '总用时' })),
-      el('div', { class: 'meta-chips' }, chips.map(([k, v]) => el('span', { title: k }, el('span', { class: 'muted', text: k }), el('code', { text: v })))),
-      el('div', { class: 'status-actions' },
-        el('button', { type: 'button', class: 'btn small', onclick: () => copyText(agent.id, '已复制会话身份') }, glyph(paths.copy), '会话身份'),
-        sid ? el('button', { type: 'button', class: 'btn small', onclick: () => copyText(sid, '已复制父会话编号') }, glyph(paths.copy), '父会话') : null,
-        el('button', { type: 'button', class: 'btn small', disabled: !agent.cwd, onclick: () => copyText(agent.cwd || '', '已复制工作目录') }, glyph(paths.copy), '工作目录'),
-      ),
-    );
-  }
-
-  const u = agent.usage || {};
-  const errors = tools.calls.filter(c => c.isError).length;
-  const cacheBase = (u.input || 0) + (u.cacheRead || 0);
-  const figures = [
-    ['工具调用', tools.calls.length, errors ? `${errors} 失败` : null, errors > 0],
-    ['上报费用', cost(u.reportedCost)],
-    ['输入', tokens(u.input)],
-    ['输出', tokens(u.output)],
-    ['缓存命中', tokens(u.cacheRead), cacheBase ? `${Math.round((u.cacheRead || 0) / cacheBase * 100)}%` : null],
-    ['事件', `#${agent.sequence ?? 0}`],
-  ];
-  mount($('#d-figures'), figures.map(([name, value, extra, bad]) => el('div', {}, el('dt', { text: name }), el('dd', { class: bad ? 'bad' : '' }, String(value), extra ? el('small', { text: extra }) : null))));
+  renderStatusCard(agent, actions, host, sid, active);
+  renderTelemetryCard(data, agent, tools, actions);
 
   const report = $('#d-report');
   report.hidden = !agent.recentMessage;
   const reportBody = report.querySelector('.p-report');
+  const reportHint = $('#report-hint');
   if (reportBody.dataset.text !== (agent.recentMessage || '')) {
     reportBody.dataset.text = agent.recentMessage || '';
     mount(reportBody, markdown(agent.recentMessage || ''));
     reportBody.classList.remove('expanded');
   }
+  if (reportHint && !report.hidden) {
+    const longReport = (agent.recentMessage || '').length > 160 || (agent.recentMessage || '').split('\n').length > 4;
+    reportHint.textContent = !longReport ? '' : reportBody.classList.contains('expanded') ? '点击收起' : '点击展开';
+  }
 
   const files = changedFiles(data);
   const badge = $('#changes-badge');
   const loaded = state.changes.get(agent.id);
-  const count = loaded?.result && loaded.result.git !== false ? loaded.files.length : files.size;
+  const count = loaded?.result && loaded.result.git !== false && loaded.files.length ? loaded.files.length : files.size;
   badge.hidden = !count;
   badge.textContent = count;
 
@@ -204,13 +311,13 @@ export function renderContext(data, ptab) {
   box.dataset.key = key;
   box.dataset.agent = data.agent.id;
   if (!ctx || !ctx.requests) {
-    mount(box, el('section', { class: 'card empty-card' }, glyph(paths.empty), data.transcriptError ? `会话记录无法读取：${data.transcriptError}` : '还没有完成的模型请求，暂时没有上下文数据。'));
+    mount(box, el('section', { class: 'p-empty' }, glyph(paths.empty), data.transcriptError ? `会话记录无法读取：${data.transcriptError}` : '还没有完成的模型请求，暂时没有上下文数据。'));
     return;
   }
   const windowSize = ctx.contextWindow;
   const fraction = windowSize ? ctx.used / windowSize : null;
-  const top = el('section', { class: 'card' },
-    el('header', { class: 'card-head' }, el('h3', { text: '上下文占用' }), el('span', { class: 'card-meta', text: `最近一次请求 · 共 ${ctx.requests} 次` })),
+  const top = el('section', { class: 'p-sec' },
+    el('header', { class: 'sec-head' }, el('h3', { text: '窗口占用' }), el('span', { class: 'sec-meta', text: `最近一次 · 共 ${ctx.requests} 次` })),
     el('div', { class: 'ctx-top' },
       gauge(fraction ?? 0, fraction == null ? tokens(ctx.used) : `${Math.round(fraction * 100)}%`, fraction == null ? '窗口未知' : '已使用'),
       el('dl', { class: 'ctx-figs' }, [['当前', tokens(ctx.used)], ['窗口', windowSize ? tokens(windowSize) : '未知'], ['剩余', windowSize ? tokens(Math.max(0, windowSize - ctx.used)) : '—'], ['峰值', tokens(ctx.peak)], ['缓存命中', ctx.used ? `${Math.round(ctx.cached / ctx.used * 100)}%` : '—'], ['压缩', `${ctx.compactions} 次`]].map(([k, v]) => el('div', {}, el('dt', { text: k }), el('dd', { text: v })))),
@@ -232,12 +339,12 @@ export function renderContext(data, ptab) {
     dot.style.background = color;
     list.append(el('li', {}, dot, el('span', { text: name }), el('span', { class: 'v', text: tokens(v) }), el('span', { class: 'p', text: `${Math.round(v / total * 100)}%` })));
   }
-  const compose = el('section', { class: 'card' }, el('header', { class: 'card-head' }, el('h3', { text: '构成' }), el('span', { class: 'card-meta', text: '按文字估算' })), stack, list, el('p', { class: 'ctx-note', text: '实际占用以模型上报为准；估算只用来看各部分的比例。最近的会话记录最多读取 500 条。' }));
+  const compose = el('section', { class: 'p-sec' }, el('header', { class: 'sec-head' }, el('h3', { text: '构成比例' }), el('span', { class: 'sec-meta', text: '按文字估算' })), stack, list, el('p', { class: 'ctx-note', text: '实际占用以模型上报为准；最多读取最近 500 条记录。' }));
   const values = ctx.series.map((s, i) => ({ x: i, y: s.used }));
   const cached = ctx.series.map((s, i) => ({ x: i, y: s.cached }));
   const showLimit = Boolean(windowSize && ctx.peak > windowSize * 0.6);
   const chart = areaChart({
-    width: 320, height: 110, animate,
+    width: 320, height: 104, animate,
     series: [{ values, color: 'var(--c2)', label: '占用' }, { values: cached, color: 'var(--c1)', opacity: 0.12, dot: false, label: '缓存' }],
     yMax: showLimit ? windowSize * 1.02 : undefined,
     refLines: showLimit ? [{ y: windowSize, cls: 'limit' }] : [],
@@ -246,135 +353,16 @@ export function renderContext(data, ptab) {
       return [`第 ${i + 1} 次请求 · ${clock(s.at)}`, ['占用 ', { b: tokens(s.used) }, windowSize ? `（${Math.round(s.used / windowSize * 100)}%）` : ''], ['缓存 ', { b: tokens(s.cached) }, '  输出 ', { b: tokens(s.output) }], s.reasoning ? ['推理 ', { b: tokens(s.reasoning) }] : null].filter(Boolean);
     },
   });
-  const growth = el('section', { class: 'card' }, el('header', { class: 'card-head' }, el('h3', { text: '增长' }), el('span', { class: 'card-meta', text: `最高 ${tokens(ctx.peak)}` })), chart, el('div', { class: 'legend' }, el('span', { style: '--c: var(--c2)', text: '每次请求的占用' }), el('span', { style: '--c: var(--c1)', text: '其中缓存' }), showLimit ? el('span', { style: '--c: var(--fail)', text: '窗口上限' }) : null));
-  const cards = [top, compose, growth];
+  const growth = el('section', { class: 'p-sec' }, el('header', { class: 'sec-head' }, el('h3', { text: '请求增长' }), el('span', { class: 'sec-meta', text: `最高 ${tokens(ctx.peak)}` })), chart, el('div', { class: 'legend' }, el('span', { style: '--c: var(--c2)', text: '每次占用' }), el('span', { style: '--c: var(--c1)', text: '其中缓存' }), showLimit ? el('span', { style: '--c: var(--fail)', text: '窗口上限' }) : null));
+  const secs = [top, compose, growth];
   if (ctx.sections.length) {
     const max = Math.max(...ctx.sections.map(s => s.tokens));
-    cards.push(el('section', { class: 'card' }, el('header', { class: 'card-head' }, el('h3', { text: '系统提示' }), el('span', { class: 'card-meta', text: `约 ${tokens(parts.system)}` })), el('ul', { class: 'bars' }, ctx.sections.slice().sort((a, b) => b.tokens - a.tokens).map((s, i) => {
+    secs.push(el('section', { class: 'p-sec' }, el('header', { class: 'sec-head' }, el('h3', { text: '系统提示' }), el('span', { class: 'sec-meta', text: `约 ${tokens(parts.system)}` })), el('ul', { class: 'bars' }, ctx.sections.slice().sort((a, b) => b.tokens - a.tokens).map((s, i) => {
       const bar = el('i'); bar.style.width = `${s.tokens / max * 100}%`; bar.style.animationDelay = `${i * 40}ms`; if (!animate) bar.style.animation = 'none';
       return el('li', {}, el('span', { text: s.name }), el('span', { class: 'v', text: tokens(s.tokens) }), el('div', { class: 'meter' }, bar));
     }))));
   }
-  mount(box, cards);
-}
-
-function parseDiff(diff = '') {
-  const files = [];
-  let file = null;
-  let oldLine = 0;
-  let newLine = 0;
-  for (const line of diff.split('\n')) {
-    if (line.startsWith('diff --git ')) { const m = / b\/(.*)$/.exec(line); file = { path: m ? m[1] : line.slice(11), status: 'M', add: 0, del: 0, lines: [] }; files.push(file); continue; }
-    if (!file) continue;
-    if (line.startsWith('new file')) file.status = 'A';
-    else if (line.startsWith('deleted file')) file.status = 'D';
-    else if (line.startsWith('rename to ')) { file.path = line.slice(10); file.status = 'R'; }
-    else if (line.startsWith('@@')) { const m = /@@ -(\d+)(?:,\d+)? \+(\d+)/.exec(line); oldLine = Number(m?.[1] || 0); newLine = Number(m?.[2] || 0); file.lines.push({ type: 'hunk', text: line }); }
-    else if (/^(\+\+\+|---|index |similarity|rename from|old mode|new mode)/.test(line)) continue;
-    else if (line.startsWith('+')) { file.add++; file.lines.push({ type: 'add', text: line.slice(1), n: newLine++ }); }
-    else if (line.startsWith('-')) { file.del++; file.lines.push({ type: 'del', text: line.slice(1), o: oldLine++ }); }
-    else if (line.startsWith(' ') || line === '') { if (file.lines.length) file.lines.push({ type: 'ctx', text: line.slice(1), o: oldLine++, n: newLine++ }); }
-    else if (line.startsWith('Binary')) file.lines.push({ type: 'hunk', text: '二进制文件' });
-  }
-  return files;
-}
-
-function minibar(add, del) {
-  const total = add + del;
-  const box = el('span', { class: 'minibar' });
-  const a = total ? Math.round(add / total * 5) : 0;
-  const d = total ? Math.min(5 - a, Math.round(del / total * 5)) : 0;
-  for (let i = 0; i < 5; i++) box.append(el('i', { class: i < a ? 'a' : i < a + d ? 'd' : '' }));
-  return box;
-}
-
-function diffTable(file) {
-  const body = el('tbody');
-  const clip = text => text.length > 1000 ? `${text.slice(0, 1000)} …（本行还有 ${text.length - 1000} 字）` : text;
-  for (const line of file.lines.slice(0, 1500)) {
-    if (line.type === 'hunk') body.append(el('tr', { class: 'hunk' }, el('td', { colspan: 3, text: line.text })));
-    else body.append(el('tr', { class: line.type }, el('td', { class: 'ln', text: line.o ?? '' }), el('td', { class: 'ln', text: line.n ?? '' }), el('td', { class: 'code' }, el('span', { class: 'mk', text: line.type === 'add' ? '+' : line.type === 'del' ? '−' : ' ' }), clip(line.text))));
-  }
-  if (file.lines.length > 1500) body.append(el('tr', { class: 'hunk' }, el('td', { colspan: 3, text: `还有 ${file.lines.length - 1500} 行未显示` })));
-  return el('div', { class: 'dscroll' }, el('table', { class: 'dtable' }, body));
-}
-
-export async function loadChanges(id, state, apiFetch, force = false) {
-  const cached = state.changes.get(id);
-  if (!force && cached && (cached.loading || Date.now() - cached.at < 15000)) return;
-  state.changes.set(id, { ...cached, loading: true });
-  if (state.ptab === 'changes') renderChanges(state.detail, state, apiFetch, true);
-  try {
-    const result = await apiFetch(`/api/agents/${id}/changes`);
-    state.changes.set(id, { result, files: parseDiff(result.diff), at: Date.now() });
-  } catch (error) {
-    state.changes.set(id, { error: error.message, at: Date.now() });
-  }
-  if (state.detail?.agent.id === id) {
-    renderChanges(state.detail, state, apiFetch, true);
-    renderHead(state.detail, pairTools(state.detail.agent.events), state);
-  }
-}
-
-export function renderChanges(data, state, apiFetch, force = false) {
-  if (!data) return;
-  const box = $('#p-changes');
-  const id = data.agent.id;
-  const entry = state.changes.get(id);
-  const key = JSON.stringify([id, entry?.at, entry?.loading, data.pullRequests?.length]);
-  if (!force && box.dataset.key === key) return;
-  box.dataset.key = key;
-  if (!entry || (entry.loading && !entry.result)) {
-    mount(box, el('section', { class: 'card' }, el('div', { class: 'skeleton w60' }), el('div', { class: 'skeleton' }), el('div', { class: 'skeleton w80' })), el('section', { class: 'card' }, el('div', { class: 'skeleton tall' })));
-    return;
-  }
-  const refresh = el('button', { type: 'button', class: `btn small ghost ${entry.loading ? 'spinning' : ''}`, title: '重新读取', onclick: () => loadChanges(id, state, apiFetch, true) }, glyph(paths.refresh), '刷新');
-  const cards = [];
-  const prs = data.pullRequests || [];
-  const r = entry.result;
-  if (entry.error) cards.push(el('section', { class: 'card' }, el('header', { class: 'card-head' }, el('h3', { text: 'Git' }), el('span', { class: 'card-meta' }, refresh)), el('p', { class: 'muted', text: `读取失败：${entry.error}` })));
-  else if (r.git === false) cards.push(el('section', { class: 'card' }, el('header', { class: 'card-head' }, el('h3', { text: 'Git' }), el('span', { class: 'card-meta' }, refresh)), el('p', { class: 'muted', text: '工作目录不是 Git 仓库，下面是对话里记录的编辑。' })));
-  else {
-    const add = entry.files.reduce((s, f) => s + f.add, 0);
-    const del = entry.files.reduce((s, f) => s + f.del, 0);
-    const sum = el('div', { class: 'sumbar' });
-    const a = el('i', { class: 'a' }); a.style.flexGrow = add || 0;
-    const d = el('i', { class: 'd' }); d.style.flexGrow = del || 0;
-    sum.append(a, d);
-    cards.push(el('section', { class: 'card' },
-      el('header', { class: 'card-head' }, el('h3', { text: 'Git' }), el('span', { class: 'card-meta' }, refresh)),
-      el('div', { class: 'git-line' }, glyph(paths.repo), el('code', { text: r.repository?.split('/').pop() || r.cwd }), el('span', { class: 'muted', text: r.mode === 'worktree' ? '独立工作树' : '共享目录' })),
-      el('div', { class: 'git-line' }, glyph(paths.branch), el('code', { text: r.branch || '当前分支' }), el('span', { class: 'muted', text: `基于 ${String(r.base).slice(0, 8)}` })),
-      el('div', { class: 'git-line' }, glyph(paths.commit), el('span', { text: `${entry.files.length} 个文件` }), el('span', { class: 'diffstat muted' }, el('span', { class: 'plus', text: `+${add}` }), el('span', { class: 'minus', text: `−${del}` }))),
-      (add + del) ? sum : null,
-      r.note && r.mode !== 'worktree' ? el('p', { class: 'ctx-note', text: '共享目录：只看声明的文件范围，可能包含其他人的修改。' }) : null,
-    ));
-    if (r.commits?.length) {
-      cards.push(el('section', { class: 'card' }, el('header', { class: 'card-head' }, el('h3', { text: '提交' }), el('span', { class: 'card-meta', text: `${r.commits.length} 个` })), el('ul', { class: 'commits' }, r.commits.slice(0, 20).map(line => el('li', {}, el('i'), el('code', { text: line.slice(0, 7) }), el('span', { text: line.slice(8), title: line.slice(8) }))))));
-    }
-  }
-  if (prs.length) {
-    cards.push(el('section', { class: 'card' }, el('header', { class: 'card-head' }, el('h3', { text: 'PR 记录' }), el('span', { class: 'card-meta', text: `${prs.length} 个` })), el('ul', { class: 'prs' }, prs.slice().reverse().map(pr => el('li', {}, el('a', { href: pr.url, target: '_blank', rel: 'noopener noreferrer' }, el('span', { class: `pr-ico ${pr.merged ? 'merged' : ''}` }, glyph(pr.merged ? paths.merge : paths.pr)), el('span', { style: 'min-width:0;display:grid' }, el('b', { text: `#${pr.number}` }), el('span', { class: 'repo', text: pr.repo })), el('span', { class: 'state', text: pr.merged ? '已合并' : pr.created ? '已创建' : '已引用' })))))));
-  }
-  const files = r && r.git !== false ? entry.files : [...changedFiles(data)].map(([filePath, f]) => ({ path: filePath, status: 'M', add: f.add, del: f.del, lines: [] }));
-  if (files.length) {
-    const list = el('ul', { class: 'files' }, files.map((f, i) => {
-      const slash = f.path.lastIndexOf('/');
-      return el('li', {}, el('button', { type: 'button', title: f.path, onclick: () => { const target = box.querySelector(`[data-file="${i}"]`); if (target) { target.open = true; target.scrollIntoView({ behavior: 'smooth', block: 'start' }); } } }, el('span', { class: `st ${f.status}`, text: f.status }), el('span', { class: 'fname' }, el('bdi', {}, el('span', { class: 'muted', text: f.path.slice(0, slash + 1) }), f.path.slice(slash + 1))), el('span', { class: 'diffstat' }, el('span', { class: 'plus', text: `+${f.add}` }), el('span', { class: 'minus', text: `−${f.del}` })), minibar(f.add, f.del)));
-    }));
-    cards.push(el('section', { class: 'card' }, el('header', { class: 'card-head' }, el('h3', { text: '文件' }), el('span', { class: 'card-meta', text: `${files.length} 个` })), list));
-  }
-  if (r && r.git !== false && entry.files.length) {
-    cards.push(el('section', { class: 'card', style: 'padding:10px' }, el('header', { class: 'card-head', style: 'padding:4px 5px 0' }, el('h3', { text: '差异' }), el('span', { class: 'card-meta', text: r.diffTruncated ? '内容较多，只显示前一部分' : '' })), entry.files.map((f, i) => {
-      const node = el('details', { class: 'dfile', 'data-file': i }, el('summary', {}, glyph(paths.chevron), el('span', { text: f.path }), el('span', { class: 'diffstat' }, el('span', { class: 'plus', text: `+${f.add}` }), el('span', { class: 'minus', text: `−${f.del}` }))));
-      node.open = i < 3 && f.lines.length < 400;
-      node.addEventListener('toggle', () => { if (node.open && !node.querySelector('.dscroll')) node.append(diffTable(f)); });
-      if (node.open) node.append(diffTable(f));
-      return node;
-    })));
-  }
-  if (!files.length && !prs.length && !entry.error) cards.push(el('section', { class: 'card empty-card' }, glyph(paths.empty), '没有发现改动。'));
-  mount(box, cards);
+  mount(box, secs);
 }
 
 export function renderToolsTab(tools) {
@@ -419,7 +407,9 @@ export function renderInfoTab(agent) {
   const cbText = agent.callback ? `${agent.callback.enabled ? '已开启' : '未开启'} · 已投递 seq ${agent.callback.antigravityDeliveredSeq || 0}${agent.callback.lastObservedBy ? `（${agent.callback.lastObservedBy}）` : ''}${agent.watcherActive ? ' · 监听活跃' : ''}` : '未启用回调';
   const rows = [
     ['身份', code(agent.id)],
-    ['状态记录', `${labels[agent.recordedStatus] || agent.recordedStatus} · 控制进程${agent.controllerAlive ? '在线' : '不在线'}${agent.marked ? ' · 面板手动标记' : ''}`],
+    agent.title && agent.rawName ? ['显示名称', `${agent.title}（原名：${agent.rawName}）`] : null,
+    agent.note ? ['会话备注', agent.note] : null,
+    ['状态记录', `${labels[agent.recordedStatus] || agent.recordedStatus} · 控制进程${agent.controllerAlive ? '在线' : '不在线'}${agent.pinned ? ' · 已置顶' : ''}${agent.archived ? ' · 已归档' : ''}${agent.marked ? ' · 面板手动标记' : ''}`],
     ['父会话', sid ? `${host.label} · ${sid}` : '未绑定父会话编号'],
     ['回调状态', cbText],
     ['父会话目录', code(agent.parentInfo?.cwd)],
@@ -431,6 +421,6 @@ export function renderInfoTab(agent) {
     ['更新时间', fullDate(agent.updatedAt)],
     ['模型', `${modelName(agent)} · 思考 ${agent.thinking || '默认'}${agent.contextWindow ? ` · 窗口 ${tokens(agent.contextWindow)}` : ''}`],
     ['用量明细', `输入 ${agent.usage?.input || 0} · 输出 ${agent.usage?.output || 0} · 缓存读 ${agent.usage?.cacheRead || 0} · 缓存写 ${agent.usage?.cacheWrite || 0}`],
-  ];
+  ].filter(Boolean);
   return [el('dl', { class: 'info' }, rows.flatMap(([k, v]) => [el('dt', { text: k }), el('dd', {}, v)])), '上报费用来自模型服务的返回值，不等于真实扣费记录。'];
 }

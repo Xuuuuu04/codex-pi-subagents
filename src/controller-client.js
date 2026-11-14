@@ -35,17 +35,27 @@ export function parentIdentity(env = process.env, clientName = '') {
     cwd: process.cwd(),
   });
 }
-/** Private Unix-socket bridge. Closing an MCP bridge detaches its parent without stopping Pi. */
 export class ControllerClient extends EventEmitter {
-  constructor(root, info, parentId = randomUUID()) { super(); this.storage = { root }; this.info = info; this.parentId = parentId; this.closed = false; }
-  /** A replaced controller leaves a stale socket; re-read controller.json, re-attach once and retry. */
+  constructor(root, info, parentId = randomUUID()) {
+    super();
+    this.storage = { root };
+    this.info = info;
+    this.parentId = parentId;
+    this.closed = false;
+    this.httpAgent = new http.Agent({ keepAlive: true, maxFreeSockets: 4 });
+  }
   async call(method, values = {}, signal) {
     try { return await this.request(method, values, signal); }
     catch (error) {
-      if (!['ENOENT', 'ECONNREFUSED'].includes(error.code) || this.closed) throw error;
-      const file = path.join(this.storage.root, 'controller.json');
-      const latest = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
-      if (!latest || latest.socket === this.info.socket) throw error;
+      if (!['ENOENT', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE'].includes(error.code) || this.closed || signal?.aborted) throw error;
+      const latest = readJsonSafe(path.join(this.storage.root, 'controller.json'));
+      if (!latest) throw error;
+      if (latest.socket === this.info.socket) {
+        if (['ECONNRESET', 'EPIPE'].includes(error.code)) return this.request(method, values, signal);
+        throw error;
+      }
+      this.httpAgent.destroy();
+      this.httpAgent = new http.Agent({ keepAlive: true, maxFreeSockets: 4 });
       this.info = latest;
       await this.request('attach', { pid: process.pid, parent: parentIdentity() });
       return this.request(method, values, signal);
@@ -53,7 +63,7 @@ export class ControllerClient extends EventEmitter {
   }
   request(method, values = {}, signal) {
     return new Promise((resolve, reject) => {
-      const request = http.request({ socketPath: this.info.socket, path: '/rpc', method: 'POST', headers: { authorization: `Bearer ${this.info.token}`, 'content-type': 'application/json' }, signal }, response => {
+      const request = http.request({ socketPath: this.info.socket, path: '/rpc', method: 'POST', agent: this.httpAgent, headers: { authorization: `Bearer ${this.info.token}`, 'content-type': 'application/json' }, signal }, response => {
         let body = ''; response.setEncoding('utf8');
         response.on('data', chunk => { body += chunk; if (body.length > 4 * 1024 * 1024) response.destroy(new Error('Controller response too large')); });
         response.on('error', reject);
@@ -92,17 +102,22 @@ export class ControllerClient extends EventEmitter {
   async watch() {
     const after = {};
     while (!this.closed) {
+      let pauseMs = 0;
+      const started = Date.now();
       try {
         this.watchAbort = new AbortController();
-        const value = await this.call('poll', { after }, this.watchAbort.signal);
+        const value = await this.call('poll', { after, timeoutMs: 20000 }, this.watchAbort.signal);
         for (const event of value.events) { after[event.agentId] = event.sequence; this.emit('event', event); }
-      } catch (error) { if (!this.closed) this.emit('controller_error', error); }
-      if (!this.closed) await new Promise(resolve => { this.watchTimer = setTimeout(resolve, 500); this.watchResolve = resolve; });
+        if (!value.events.length && Date.now() - started < 40) pauseMs = 500;
+      } catch (error) {
+        if (!this.closed) { this.emit('controller_error', error); pauseMs = 500; }
+      }
+      if (!this.closed && pauseMs > 0) await new Promise(resolve => { this.watchTimer = setTimeout(resolve, pauseMs); this.watchResolve = resolve; });
     }
   }
   async close() {
     if (this.closed) return; this.closed = true; this.watchAbort?.abort(); clearTimeout(this.watchTimer); this.watchResolve?.();
-    await this.call('detach');
+    try { await this.call('detach'); } finally { this.httpAgent.destroy(); }
   }
 }
 
@@ -110,13 +125,14 @@ async function probe(root, piAgentDir) {
   const info = readJsonSafe(path.join(root, 'controller.json'));
   if (!info?.socket) return null;
   let health;
-  try { health = await new ControllerClient(root, info).health(); }
+  const probeClient = new ControllerClient(root, info);
+  try { health = await probeClient.health(); }
   catch (error) {
     if (['ENOENT', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE'].includes(error?.code) || error?.name === 'AbortError' || /timed out|Unauthorized/i.test(error?.message || '')) {
       return null;
     }
     throw error;
-  }
+  } finally { probeClient.httpAgent.destroy(); }
   const expectedAgentDir = piAgentDir || process.env.PI_CODING_AGENT_DIR || '';
   const stalePath = health?.scriptPath && !fs.existsSync(health.scriptPath);
   const wrongAgentDir = health?.piAgentDir !== undefined && health.piAgentDir !== expectedAgentDir;

@@ -6,10 +6,11 @@ import { bindTips, renderSpeed, drawSpeed, subscribeSpeed, closeSpeed, tickSpeed
 import { renderConversation, refreshTail } from './conversation.js';
 import { renderOverview, renderChips, renderList, toggleGroup } from './sidebar.js';
 import {
-  pairTools, renderLane, renderHead, renderContext, loadChanges, renderChanges,
+  pairTools, renderLane, clearHead, renderHead, renderContext,
   renderToolsTab, renderEventsTab, renderResultTab, renderInfoTab,
 } from './panels.js';
-import { closeMenu, agentMenu, groupMenu, renderSystemDialog } from './dialogs.js';
+import { loadChanges, renderChanges } from './changes.js';
+import { closeMenu, createSessionActions, agentMenu, groupMenu, renderSystemDialog } from './dialogs.js';
 import { openSettingsDialog } from './settings.js';
 
 if (location.hash) history.replaceState(null, '', location.pathname);
@@ -19,7 +20,7 @@ const state = {
   agents: [], groupNames: {}, selected: store.get('selected', ''), filter: store.get('filter', 'all'),
   collapsed: new Set(store.get('collapsed2', [])), showClosed: new Set(store.get('showClosed', [])),
   tab: store.get('tab', 'messages'), ptab: store.get('ptab', 'overview'), hideTools: store.get('hideTools', false),
-  paused: false, fetching: false, detailFetching: false, detail: null, recordsKey: '', renderedView: '',
+  paused: false, fetching: false, detailFetching: false, liveFetching: false, detail: null, recordsKey: '', renderedView: '',
   previous: new Map(), notify: store.get('notify', false), refreshedAt: null,
   sideHidden: store.get('sideHidden', null), panelHidden: store.get('panelHidden', null),
   listRendered: false, listKey: '', changes: new Map(), sseActive: false,
@@ -36,52 +37,40 @@ function showError(message) {
   err.hidden = !message;
 }
 
-async function markAgent(id, status) {
-  await post(`/api/agents/${id}/mark`, { status });
-  showToast(status === 'closed' ? '已标记为已关闭' : status === 'completed' ? '已标记为已结束' : '已取消标记');
-  await refresh(true);
-}
-
-async function moveAgent(id, group) {
-  await post(`/api/agents/${id}/move`, { group });
-  showToast(group ? '已移动' : '已移回原分组');
-  await refresh(true);
-}
-
-async function renameGroup(key, name) {
-  await post('/api/groups', { key, name });
-  showToast(name ? '已重命名' : '已恢复默认名称');
-  await refresh(true);
-}
-
-async function batchClose(closable) {
-  let done = 0, lastErr = '';
-  for (const a of closable) {
-    try { await post(`/api/agents/${a.id}/mark`, { status: 'closed' }); done++; }
-    catch (err) { lastErr = err.message; }
-  }
-  showToast(lastErr ? `已关闭 ${done}/${closable.length} 个（${lastErr}）` : `已关闭 ${done} 个会话`);
-  await refresh(true);
+function switchPanelTab(ptab) {
+  state.ptab = ptab;
+  store.set('ptab', ptab);
+  $('#panel-body').scrollTop = 0;
+  if (state.detail) renderPanel(state.detail);
+  else syncSeg($('#ptabs'), 'ptab', ptab);
 }
 
 const listHandlers = {
   onSelect: select,
+  onEditAgent: a => menuActions.onEdit(a),
+  onArchiveAgent: a => menuActions.onArchive([a.id], !a.archived, a.name || a.id.slice(0, 8)).catch(err => showToast(err.message)),
   onAgentMenu: (a, x, y) => agentMenu(a, x, y, state, menuActions),
   onGroupMenu: (g, x, y) => groupMenu(g, x, y, state, menuActions),
-  onMoveAgent: (id, key) => moveAgent(id, key).catch(err => showToast(err.message)),
+  onMoveAgent: (id, key) => menuActions.onMove(id, key).catch(err => showToast(err.message)),
 };
 
-const menuActions = {
-  onSelect: select, onMark: markAgent, onMove: moveAgent,
-  onToggleGroup: key => toggleGroup(key, state, listHandlers),
-  onRenameGroup: renameGroup, onBatchClose: batchClose,
-};
+const menuActions = createSessionActions({ state, post, refresh, onSelect: select, onSwitchTab: switchPanelTab, onToggleGroup: key => toggleGroup(key, state, listHandlers) });
+state.actions = menuActions;
+
+function syncSelectedPool() {
+  const current = state.agents.find(a => a.id === state.selected);
+  if (current && Boolean(current.archived) === (state.filter === 'archived')) return false;
+  const pool = state.agents.filter(a => Boolean(a.archived) === (state.filter === 'archived'));
+  const pick = pool.find(a => a.status === 'waiting') || pool.find(a => working.has(a.status)) || pool.find(a => a.status !== 'closed') || pool[0];
+  state.selected = pick?.id || ''; state.recordsKey = ''; state.detail = null;
+  return true;
+}
 
 function pickFilter(key) {
-  state.filter = key;
-  store.set('filter', key);
-  renderChips(state, pickFilter);
-  renderList(state, listHandlers);
+  state.filter = key; store.set('filter', key);
+  const changed = syncSelectedPool();
+  renderChips(state, pickFilter); renderList(state, listHandlers);
+  if (changed) state.selected ? refreshDetail().catch(error => showError(error.message)) : clearHead(state.agents.length > 0);
 }
 
 function select(id) {
@@ -207,23 +196,14 @@ async function applyAgentsPayload(result) {
   state.agents = result.agents || [];
   state.groupNames = result.groupNames || {};
   state.refreshedAt = result.refreshedAt;
-  if (!state.agents.some(a => a.id === state.selected)) {
-    const pick = state.agents.find(a => a.status === 'waiting') || state.agents.find(a => working.has(a.status)) || state.agents.find(a => a.status !== 'closed') || state.agents[0];
-    state.selected = pick?.id || '';
-    state.recordsKey = '';
-  }
+  syncSelectedPool();
   notifyChanges();
   renderOverview(state);
   renderChips(state, pickFilter);
   if ($('#menu').hidden) renderList(state, listHandlers);
   applyLayout();
   if (state.selected) await refreshDetail().catch(error => showError(error.message));
-  else {
-    $('#placeholder').hidden = false;
-    $('#records').replaceChildren();
-    $('#dock').hidden = true;
-    $('#placeholder-text').textContent = '还没有会话。创建子代理后，这里会实时显示它的进度。';
-  }
+  else clearHead(state.agents.length > 0);
   if (!state.paused) {
     $('#live').className = 'live';
     $('#connection').textContent = state.sseActive ? '实时推送' : `已更新 ${clock(result.refreshedAt)}`;
@@ -360,7 +340,12 @@ $('#notify').addEventListener('click', async () => {
 });
 $('#settings-btn').addEventListener('click', () => openSettingsDialog($('#settings-dialog'), apiFetch, () => refresh(true)));
 $('#sys-btn').addEventListener('click', () => renderSystemDialog($('#sys-dialog'), apiFetch, false));
-$('#d-report').addEventListener('click', () => $('#d-report .p-report').classList.toggle('expanded'));
+$('#d-report').addEventListener('click', () => {
+  const body = $('#d-report .p-report');
+  const expanded = body.classList.toggle('expanded');
+  const hint = $('#report-hint');
+  if (hint && hint.textContent) hint.textContent = expanded ? '点击收起' : '点击展开';
+});
 $('#panel-toggle').addEventListener('click', () => setPanel($('#app').classList.contains('panel-hidden')));
 $('#panel-close').addEventListener('click', () => setPanel(false));
 $('#side-collapse').addEventListener('click', () => setSide(false));
@@ -378,15 +363,7 @@ $('#search').addEventListener('input', () => renderList(state, listHandlers));
 for (const button of document.querySelectorAll('[data-tab]')) {
   button.addEventListener('click', () => { state.tab = button.dataset.tab; store.set('tab', state.tab); state.recordsKey = ''; renderRecords(); });
 }
-for (const button of document.querySelectorAll('[data-ptab]')) {
-  button.addEventListener('click', () => {
-    state.ptab = button.dataset.ptab;
-    store.set('ptab', state.ptab);
-    $('#panel-body').scrollTop = 0;
-    if (state.detail) renderPanel(state.detail);
-    else syncSeg($('#ptabs'), 'ptab', state.ptab);
-  });
-}
+for (const button of document.querySelectorAll('[data-ptab]')) button.addEventListener('click', () => switchPanelTab(button.dataset.ptab));
 for (const dlg of document.querySelectorAll('dialog.dialog')) {
   dlg.addEventListener('click', event => { if (event.target === dlg || event.target.closest('[data-close]')) dlg.close(); });
 }
@@ -408,6 +385,8 @@ document.addEventListener('keydown', event => {
   if (event.key === '/') { event.preventDefault(); if (narrow()) setSide(true); $('#search').focus(); }
   else if (event.key === 'j' || event.key === 'ArrowDown') { event.preventDefault(); moveSelection(1); }
   else if (event.key === 'k' || event.key === 'ArrowUp') { event.preventDefault(); moveSelection(-1); }
+  else if (event.key === 'e') { const a = state.detail?.agent || state.agents.find(x => x.id === state.selected); if (a) { event.preventDefault(); menuActions.onEdit(a); } }
+  else if (event.key === 'a') { const a = state.detail?.agent || state.agents.find(x => x.id === state.selected); if (a && (!working.has(a.status) || a.archived)) { event.preventDefault(); menuActions.onArchive([a.id], !a.archived, a.name || a.id.slice(0, 8)).catch(err => showToast(err.message)); } }
   else if (event.key === 'p') setPaused(!state.paused);
   else if (event.key === '[') setSide($('#app').classList.contains('side-hidden'));
   else if (event.key === ']') setPanel($('#app').classList.contains('panel-hidden'));
@@ -439,5 +418,17 @@ syncNotifyButton();
 applyLayout();
 requestAnimationFrame(() => { syncSeg($('#views'), 'tab', state.tab); syncSeg($('#ptabs'), 'ptab', state.ptab); });
 refresh(true).then(applyLayout);
+async function pollLive() {
+  const cur = state.detail;
+  if (state.paused || state.detailFetching || state.liveFetching || !cur || !working.has(cur.agent?.status)) return;
+  const id = cur.agent.id; state.liveFetching = true;
+  try {
+    const live = await apiFetch(`/api/agents/${id}/live`);
+    if (state.detail?.agent?.id !== id) return;
+    if (live.sequence !== cur.agent.sequence || live.status !== cur.agent.status || (live.sessionBytes !== undefined && live.sessionBytes !== cur.sessionBytes) || (cur.live && !live.live)) { await refreshDetail(); return; }
+    cur.live = live.live; if (live.usage) cur.agent.usage = live.usage;
+    renderHead(cur, pairTools(cur.agent.events), state); renderRecords(); renderSpeed(cur, state.paused);
+  } finally { state.liveFetching = false; }
+}
 setInterval(tick, 1000);
-setInterval(() => { if (!state.paused && working.has(state.detail?.agent?.status)) refreshDetail().catch(error => showError(error.message)); }, 400);
+setInterval(() => { pollLive().catch(error => showError(error.message)); }, 350);

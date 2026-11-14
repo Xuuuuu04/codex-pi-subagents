@@ -111,9 +111,9 @@ Handle routine coding and exploration directly as the main agent; invoke \`pi-su
 - **Reactive background wait**: run \`mustWait.antigravityBackgroundCommand\` (\`node ".../scripts/wait-events.js" --session <Conversation ID>\`) via \`run_command\` with \`WaitMsBeforeAsync: 500\` and \`IsDaemon: false\`, then end the turn cleanly; the system wakes your session automatically when a child emits \`settled\`, \`question\`, \`process_failed\`, or \`budget_limit\`.
 - **Lifecycle safety net**: bundled \`PreInvocation\` and \`Stop\` hooks automatically inject undelivered events and warn before stopping while bound children remain active without a watcher.
 
-## Verification
+## Verification & Session Organization
 
-Before accepting changes from a settled child, call \`get_agent_changes\` (for worktree or shared owned diffs) and run target checks directly.
+Before accepting changes from a settled child, call \`get_agent_changes\` (for worktree or shared owned diffs) and run target checks directly. Use \`organize_agents\` (shared live with the 3141 dashboard) to set readable session titles, attach summary notes, pin key runs, or archive finished sessions, and filter with \`list_agents({ archiveFilter: "active" })\`.
 `;
 
 const pluginReadme = `# Pi Subagents Antigravity Plugin

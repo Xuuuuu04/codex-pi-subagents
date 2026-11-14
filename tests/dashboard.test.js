@@ -385,3 +385,95 @@ test('parseDashboardPort validates ports, systemStatus counts interrupted agents
   const health = await fetch(origin + '/api/health', { headers });
   assert.equal(health.status, 200);
 });
+
+test('dashboard session editing, archiving, batch-mark and lightweight live endpoint work safely', async t => {
+  const { manager, cwd } = await setup(t);
+  const idle = await spawn(manager, cwd);
+  await settled(manager, idle.id);
+  const busy = await manager.spawn({
+    cwd,
+    prompt: 'ASK',
+    provider: 'fake',
+    model: 'cheap',
+    ownedPaths: ['b'],
+    workspaceMode: 'shared',
+    parentId: 'parent-dash',
+  });
+  for (let i = 0; i < 40; i++) {
+    if (manager.read(busy.id).agent.status === 'waiting') break;
+    await new Promise(r => setTimeout(r, 20));
+  }
+
+  const dashboard = await startDashboard({ root: manager.storage.root, port: 0, token: 'org-test' });
+  t.after(() => dashboard.close());
+  const origin = new URL(dashboard.url).origin;
+  const auth = { authorization: 'Bearer org-test' };
+  const postHeaders = { ...auth, 'content-type': 'application/json', 'x-pi-dashboard': '1' };
+
+  const changesAsset = await fetch(`${origin}/changes.js`, { headers: auth });
+  assert.equal(changesAsset.status, 200);
+
+  const metaRes = await fetch(`${origin}/api/agents/${idle.id}/meta`, {
+    method: 'POST',
+    headers: postHeaders,
+    body: JSON.stringify({ title: '检索验证会话', note: '核对接口返回', pinned: true, group: 'custom:核心检查' }),
+  });
+  assert.equal(metaRes.status, 200);
+  const detail = await (await fetch(`${origin}/api/agents/${idle.id}`, { headers: auth })).json();
+  assert.equal(detail.agent.name, '检索验证会话');
+  assert.equal(detail.agent.rawName, idle.name);
+  assert.equal(detail.agent.note, '核对接口返回');
+  assert.equal(detail.agent.pinned, true);
+  assert.equal(detail.agent.movedTo, 'custom:核心检查');
+
+  const rejectBusy = await fetch(`${origin}/api/agents/archive`, {
+    method: 'POST',
+    headers: postHeaders,
+    body: JSON.stringify({ id: busy.id, archived: true }),
+  });
+  assert.equal(rejectBusy.status, 400);
+
+  const rejectWaitingMark = await fetch(`${origin}/api/agents/${busy.id}/mark`, {
+    method: 'POST',
+    headers: postHeaders,
+    body: JSON.stringify({ status: 'closed' }),
+  });
+  assert.equal(rejectWaitingMark.status, 400);
+
+  const rejectBadFlag = await fetch(`${origin}/api/agents/archive`, {
+    method: 'POST',
+    headers: postHeaders,
+    body: JSON.stringify({ id: idle.id, archived: 'false' }),
+  });
+  assert.equal(rejectBadFlag.status, 400);
+
+  const batchArch = await (await fetch(`${origin}/api/agents/archive`, {
+    method: 'POST',
+    headers: postHeaders,
+    body: JSON.stringify({ agentIds: [idle.id, busy.id], archived: true }),
+  })).json();
+  assert.deepEqual(batchArch.updatedIds, [idle.id]);
+  assert.equal(batchArch.skippedIds.length, 1);
+
+  const sys = await (await fetch(`${origin}/api/system`, { headers: auth })).json();
+  assert.equal(sys.counts.archived, 1);
+
+  const liveRes = await (await fetch(`${origin}/api/agents/${busy.id}/live`, { headers: auth })).json();
+  assert.equal(liveRes.id, busy.id);
+  assert.equal(liveRes.status, 'waiting');
+  assert.equal(typeof liveRes.sessionBytes, 'number');
+
+  const rec = manager.storage.load(idle.id);
+  rec.updatedAt = new Date(Date.now() + 5000).toISOString();
+  manager.storage.save(rec);
+  const afterActivity = await (await fetch(`${origin}/api/agents/${idle.id}`, { headers: auth })).json();
+  assert.equal(afterActivity.agent.archived, false);
+
+  const batchClose = await (await fetch(`${origin}/api/agents/batch-mark`, {
+    method: 'POST',
+    headers: postHeaders,
+    body: JSON.stringify({ agentIds: [idle.id, busy.id], status: 'closed' }),
+  })).json();
+  assert.deepEqual(batchClose.updatedIds, [idle.id]);
+  assert.deepEqual(batchClose.skippedIds, [busy.id]);
+});

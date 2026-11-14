@@ -9,8 +9,10 @@ function combinedSpeed(agents) {
 }
 
 export function renderOverview(state) {
+  const active = state.agents.filter(a => !a.archived);
+  const archivedCount = state.agents.length - active.length;
   const counts = new Map();
-  for (const a of state.agents) counts.set(a.status, (counts.get(a.status) || 0) + 1);
+  for (const a of active) counts.set(a.status, (counts.get(a.status) || 0) + 1);
   const dist = $('#dist');
   dist.replaceChildren();
   for (const status of order) {
@@ -23,10 +25,10 @@ export function renderOverview(state) {
   }
   const sum = key => state.agents.reduce((total, a) => total + (a.usage?.[key] || 0), 0);
   mount($('#totals'),
-    el('span', {}, '运行', el('b', { text: state.agents.filter(a => busyStatuses.has(a.status)).length })),
+    el('span', { title: archivedCount ? `活跃 ${active.length} · 已归档 ${archivedCount}` : `活跃会话 ${active.length}` }, '运行', el('b', { text: active.filter(a => busyStatuses.has(a.status)).length })),
     el('span', { title: '全部会话输入 + 输出 token' }, 'Token', el('b', { text: tokens(sum('input') + sum('output')) })),
     el('span', { title: '模型服务上报的费用，不是真实扣费记录' }, '上报', el('b', { text: cost(sum('reportedCost')) })),
-    el('span', { title: '工作中会话最近一次请求的输出速度之和' }, '速度', el('b', { text: combinedSpeed(state.agents) })),
+    el('span', { title: '工作中会话最近一次请求的输出速度之和' }, '速度', el('b', { text: combinedSpeed(active) })),
   );
   const waiting = counts.get('waiting') || 0;
   document.title = waiting ? `(${waiting} 待答复) Pi 调度台` : 'Pi 调度台';
@@ -48,11 +50,15 @@ function directoryName(dirPath) {
   return scratch ? `Claude 会话 ${scratch[1]}` : dirPath.replace(/\/+$/, '').split('/').pop() || '/';
 }
 
+export function bucketOf(agent) {
+  const sid = agentSessionId(agent);
+  return sid ? `sid:${sid}` : `pid:${agent.parentId || ''}`;
+}
+
 export function parentGroups(agents) {
   const byBucket = new Map();
   for (const a of agents) {
-    const sid = agentSessionId(a);
-    const bucket = sid ? `sid:${sid}` : `pid:${a.parentId || ''}`;
+    const bucket = bucketOf(a);
     if (!byBucket.has(bucket)) byBucket.set(bucket, []);
     byBucket.get(bucket).push(a);
   }
@@ -85,11 +91,6 @@ export function parentGroups(agents) {
   }));
 }
 
-function bucketOf(agent) {
-  const sid = agentSessionId(agent);
-  return sid ? `sid:${sid}` : `pid:${agent.parentId || ''}`;
-}
-
 export function buildGroups(visibleList, state) {
   const parents = parentGroups(state.agents);
   const groups = new Map();
@@ -105,13 +106,14 @@ export function buildGroups(visibleList, state) {
     groups.get(key).agents.push(a);
   }
   for (const g of groups.values()) {
-    g.name = state.groupNames[g.key]
+    const customName = Object.hasOwn(state.groupNames, g.key) ? state.groupNames[g.key] : '';
+    g.name = customName
       || (g.info.custom ? g.key.replace(/^custom:/, '') : g.info.cwd && g.info.cwd !== '/' ? directoryName(g.info.cwd) : '未归类会话');
   }
   return groups;
 }
 
-const rank = a => attention.has(a.status) ? 0 : busyStatuses.has(a.status) ? 1 : a.status === 'closed' ? 3 : 2;
+const rank = a => attention.has(a.status) ? 0 : busyStatuses.has(a.status) ? 1 : a.pinned ? 2 : a.status === 'closed' ? 4 : 3;
 
 function indicator(a) {
   if (busyStatuses.has(a.status)) return el('span', { class: 'spin', title: labels[a.status] });
@@ -125,30 +127,39 @@ function indicator(a) {
 export function visibleAgents(state) {
   const query = ($('#search')?.value || '').trim().toLowerCase();
   const filter = filters.find(f => f.key === state.filter) || filters[0];
-  return state.agents.filter(a => filter.match(a.status) && (!query || `${a.name} ${modelName(a)} ${a.cwd} ${a.sourceCwd} ${a.id} ${agentSessionId(a) || ''} ${a.parentInfo?.cwd || ''}`.toLowerCase().includes(query)));
+  return state.agents.filter(a => (state.filter === 'all' && query ? true : filter.match(a.status, a)) && (!query || `${a.name} ${a.rawName || ''} ${a.note || ''} ${modelName(a)} ${a.cwd} ${a.sourceCwd} ${a.id} ${agentSessionId(a) || ''} ${a.parentInfo?.cwd || ''}`.toLowerCase().includes(query)));
 }
 
 export function renderChips(state, onPick) {
   const chips = $('#chips');
   chips.replaceChildren();
   for (const f of filters) {
+    const count = state.agents.filter(a => f.match(a.status, a)).length;
+    if (f.secondary && !count && state.filter !== f.key) continue;
     chips.append(el('button', {
       type: 'button',
       'aria-pressed': String(state.filter === f.key),
       onclick: () => onPick(f.key),
-    }, f.title, el('span', { text: state.agents.filter(a => f.match(a.status)).length })));
+    }, f.title, el('span', { text: count })));
   }
 }
 
 function row(a, state, handlers) {
+  const canArchive = !working.has(a.status) || a.archived;
+  const tipLines = [
+    `${a.name || a.id}${a.title && a.rawName && a.title !== a.rawName ? `（原名：${a.rawName}）` : ''}`,
+    `${modelName(a)} · ${labels[a.status] || a.status}${a.pinned ? ' · 已置顶' : ''}${a.archived ? ' · 已归档' : ''}${a.marked ? ' · 手动标记' : ''}`,
+    a.note ? `备注：${a.note}` : '',
+  ].filter(Boolean).join('\n');
   return el('button', {
     type: 'button',
-    class: `row ${a.status === 'closed' ? 'closed' : ''}`,
+    class: `row ${a.status === 'closed' ? 'closed' : ''} ${a.archived ? 'archived' : ''} ${a.pinned ? 'pinned' : ''}`.trim(),
     'data-agent': a.id,
     'aria-current': String(a.id === state.selected),
     draggable: 'true',
-    title: `${a.name || a.id}\n${modelName(a)} · ${labels[a.status] || a.status}${a.marked ? ' · 手动标记' : ''}`,
+    title: tipLines,
     onclick: () => handlers.onSelect(a.id),
+    ondblclick: () => handlers.onEditAgent(a),
     oncontextmenu: event => {
       event.preventDefault();
       handlers.onSelect(a.id);
@@ -160,20 +171,33 @@ function row(a, state, handlers) {
     },
   },
   el('span', { class: 'ind' }, indicator(a)),
+  a.pinned ? glyph(paths.pin, 'pin-ico') : null,
   el('span', { class: 'name', text: a.name || a.id.slice(0, 8) }),
+  a.note ? glyph(paths.note, 'note-ico') : null,
   a.watcherActive ? el('span', { class: 'watch-dot', title: '正在监听回调事件' }) : null,
   a.movedTo ? glyph(paths.move, 'moved') : null,
   el('span', { class: 'ago', 'data-ago': a.updatedAt, text: ago(a.updatedAt) }),
-  el('span', {
-    class: 'row-more',
-    role: 'button',
-    title: '更多操作',
-    onclick: event => {
-      event.stopPropagation();
-      const box = event.currentTarget.getBoundingClientRect();
-      handlers.onAgentMenu(a, box.right - 6, box.bottom + 4);
-    },
-  }, glyph(paths.more)));
+  el('span', { class: 'row-tools' },
+    canArchive ? el('span', {
+      class: 'row-act',
+      role: 'button',
+      title: a.archived ? '取消归档' : '归档会话',
+      onclick: event => {
+        event.stopPropagation();
+        handlers.onArchiveAgent(a);
+      },
+    }, glyph(a.archived ? paths.unarchive : paths.archive)) : null,
+    el('span', {
+      class: 'row-act more',
+      role: 'button',
+      title: '更多操作',
+      onclick: event => {
+        event.stopPropagation();
+        const box = event.currentTarget.getBoundingClientRect();
+        handlers.onAgentMenu(a, box.right - 6, box.bottom + 4);
+      },
+    }, glyph(paths.more)),
+  ));
 }
 
 function listKey(state) {
@@ -184,7 +208,7 @@ function listKey(state) {
     [...state.showClosed],
     state.groupNames,
     state.selected,
-    state.agents.map(a => [a.id, a.status, a.name, a.movedTo, a.marked, a.watcherActive, a.parentId, agentSessionId(a)]),
+    state.agents.map(a => [a.id, a.status, a.name, a.title, a.note, a.pinned, a.archived, a.movedTo, a.marked, a.watcherActive, a.parentId, agentSessionId(a)]),
   ]);
 }
 
@@ -200,7 +224,7 @@ export function renderList(state, handlers, force = false) {
   const visible = visibleAgents(state);
   const searching = Boolean(($('#search')?.value || '').trim() || state.filter !== 'all');
   const groups = [...buildGroups(visible, state).values()].filter(g => g.agents.length);
-  const latest = g => Math.max(...g.agents.map(a => (rank(a) < 3 ? 1e13 : 0) + (ms(a.updatedAt) || 0)));
+  const latest = g => Math.max(...g.agents.map(a => (rank(a) < 4 ? 1e13 : 0) + (a.pinned ? 5e12 : 0) + (ms(a.updatedAt) || 0)));
   groups.sort((x, y) => latest(y) - latest(x));
 
   for (const g of groups) {
@@ -284,7 +308,11 @@ export function renderList(state, handlers, force = false) {
   }
   const empty = $('#empty');
   empty.hidden = visible.length > 0;
-  empty.textContent = state.agents.length ? '没有符合条件的会话' : '还没有会话。创建子代理后会出现在这里。';
+  empty.textContent = !state.agents.length
+    ? '还没有会话。创建子代理后会出现在这里。'
+    : state.filter === 'archived'
+      ? '还没有归档会话。可将已结束的会话归档收纳到这里。'
+      : '没有符合条件的会话';
 }
 
 export function toggleGroup(key, state, handlers) {
@@ -299,8 +327,10 @@ export function toggleGroup(key, state, handlers) {
   }
 }
 
+export function defaultAgentGroupKey(a, agents) {
+  return parentGroups(agents).get(bucketOf(a))?.key || '';
+}
+
 export function currentAgentGroupKey(a, agents) {
-  const sid = agentSessionId(a);
-  const bucket = sid ? `sid:${sid}` : `pid:${a.parentId || ''}`;
-  return a.movedTo || parentGroups(agents).get(bucket)?.key;
+  return a.movedTo || defaultAgentGroupKey(a, agents);
 }

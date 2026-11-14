@@ -17,6 +17,7 @@ import { installCallbacks, callbackShape } from './callbacks.js';
 import { agentChanges } from './agent-changes.js';
 import { Storage } from './storage.js';
 import { getProviderQuota, quotaProviders } from './quota-providers.js';
+import { DashboardData } from './dashboard-data.js';
 import { dashboardInfo, ensureDashboard } from './dashboard-launcher.js';
 import { spawnReminder, waitReminder, waitCommandFor, sessionIdPattern } from './wait-reminder.js';
 import { buildSettingsPayload, enrichModels, filterModelProfiles } from './model-settings.js';
@@ -115,17 +116,52 @@ function registerModelAndQuotaTools({ register, manager, options }) {
   }, true);
 }
 
+function registerOrganizeTool({ register, manager, callbacksRef }) {
+  register('organize_agents', 'Edit session display title, summary note, pinned flag, group (plain custom names are stored as custom:<name>), manual status mark, or archive/unarchive finished sessions (shared live with the 3141 dashboard). Never stops or alters running Pi processes.', {
+    agentIds: z.array(id).min(1).max(maxAgentLimit),
+    title: z.string().max(100).nullable().optional(),
+    note: z.string().max(1000).nullable().optional(),
+    pinned: z.boolean().optional(),
+    group: z.string().max(300).nullable().optional(),
+    statusMark: z.enum(['completed', 'closed']).nullable().optional(),
+    archived: z.boolean().optional(),
+  }, async ({ agentIds, ...patch }) => {
+    const listed = new Map((await manager.list(true)).map(agent => [agent.id, agent]));
+    const callbacks = callbacksRef();
+    const envSessionId = process.env.ANTIGRAVITY_CONVERSATION_ID || process.env.CODEX_THREAD_ID || process.env.CLAUDE_CODE_SESSION_ID;
+    for (const agentId of agentIds) {
+      const target = listed.get(agentId);
+      const sameHostSession = envSessionId && (target?.parentInfo?.sessionId === envSessionId || callbacks.get(agentId)?.antigravitySessionId === envSessionId);
+      if (target?.attachedOtherParent && !sameHostSession) {
+        throw new Error('Agent belongs to another attached parent');
+      }
+    }
+    return new DashboardData(manager.storage.root).organize(agentIds, patch);
+  });
+}
+
 function registerSessionTools({ register, manager, server, options, managerOptions, resolveSessionId, callbacksRef }) {
   registerModelAndQuotaTools({ register, manager, options });
-  register('list_agents', 'Inspect current children, or include saved sessions for explicit recovery, optionally filtered by Antigravity/host sessionId. Returns the private local dashboard URL when running.', {
+  registerOrganizeTool({ register, manager, callbacksRef });
+  register('list_agents', 'Inspect current children, or include saved sessions for explicit recovery, optionally filtered by Antigravity/host sessionId or archiveFilter. Includes dashboard display title, note, pinned and archived state.', {
     includeSaved: z.boolean().default(false),
     sessionId: safeSessionId.optional(),
-  }, async ({ includeSaved, sessionId }) => {
+    archiveFilter: z.enum(['all', 'active', 'archived']).default('all'),
+  }, async ({ includeSaved, sessionId, archiveFilter }) => {
     const raw = await manager.list(includeSaved);
     const callbacks = callbacksRef();
-    const agents = sessionId
-      ? raw.filter(agent => agent.parentInfo?.sessionId === sessionId || callbacks.get(agent.id)?.antigravitySessionId === sessionId)
-      : raw;
+    const dash = new DashboardData(manager.storage.root);
+    const enriched = raw.map(agent => {
+      const org = dash.organizationOf(agent.id, agent);
+      return org ? { ...agent, displayName: org.title || agent.name, organization: org } : agent;
+    });
+    const agents = enriched.filter(agent => {
+      if (sessionId && agent.parentInfo?.sessionId !== sessionId && callbacks.get(agent.id)?.antigravitySessionId !== sessionId) return false;
+      const isArchived = Boolean(agent.organization?.archived);
+      if (archiveFilter === 'active' && isArchived) return false;
+      if (archiveFilter === 'archived' && !isArchived) return false;
+      return true;
+    });
     return { agents, dashboardUrl: dashboardInfo(manager.storage.root)?.url };
   }, true);
   register('bind_session', 'Bind the current MCP connection and owned or named agents to an Antigravity or host session so hooks, callbacks and dashboard group them cleanly.', {
@@ -186,6 +222,8 @@ function registerControlTools({ register, manager, resolveSessionId, callbacksRe
   }, async ({ agentId, afterSequence, limit, transcript }) => {
     const result = await manager.read(agentId, afterSequence, limit);
     if (result.events?.length && result.nextSequence) callbacksRef().markObserved(agentId, result.nextSequence, 'read_agent');
+    const org = new DashboardData(manager.storage.root).organizationOf(agentId, result.agent);
+    if (org) result.organization = org;
     if (transcript) {
       const data = manager.transcript ? await manager.transcript(agentId) : await manager.get(agentId).rpc.command('get_messages');
       let remaining = 40000;
