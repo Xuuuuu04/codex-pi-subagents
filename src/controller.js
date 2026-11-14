@@ -6,6 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
 import { Manager, defaultMaxAgents } from './manager.js';
 import { processAlive, atomicWriteJson } from './storage.js';
+import { normalizeParentInfo } from './controller-client.js';
 import { FileTaskStore } from './task-store.js';
 
 const controllerScriptPath = fileURLToPath(import.meta.url);
@@ -100,9 +101,8 @@ async function dispatch(parentId, method, v) {
   }
   // 父会话身份（客户端类型、会话编号、所在目录）由桥接进程自报，只用于面板分组显示，不参与任何权限判断。
   if (method === 'attach') {
-    const parent = v.parent && typeof v.parent === 'object' ? v.parent : {};
-    const identity = Object.fromEntries(['kind', 'sessionId', 'hostSessionId', 'cwd'].filter(key => typeof parent[key] === 'string' && parent[key].length <= 500 && (key !== 'cwd' || path.isAbsolute(parent[key]))).map(key => [key, parent[key]]));
-    parents.set(parentId, { connected: true, pid: v.pid, identity: Object.keys(identity).length ? identity : parents.get(parentId)?.identity, lastSeen: Date.now() }); return { parentId };
+    const identity = normalizeParentInfo(v.parent, parents.get(parentId)?.identity);
+    parents.set(parentId, { connected: true, pid: v.pid, identity, lastSeen: Date.now() }); return { parentId, identity };
   }
   if (method === 'detach') { parents.set(parentId, { connected: false, lastSeen: Date.now() }); return { detached: true }; }
   const parent = parents.get(parentId); if (!parent?.connected) throw new Error('Parent is not attached'); parent.lastSeen = Date.now();
@@ -129,9 +129,35 @@ async function dispatch(parentId, method, v) {
   }
   if (method === 'resume') {
     const current = manager.agents.get(v.agentId);
+    const parentIdentityInfo = parents.get(parentId)?.identity;
+    const explicit = v.antigravitySessionId ? { kind: 'antigravity', sessionId: v.antigravitySessionId, cwd: parentIdentityInfo?.cwd } : v.parentSession || parentIdentityInfo;
     if (current && current.record.parentId !== parentId && parents.get(current.record.parentId)?.connected && processAlive(parents.get(current.record.parentId).pid)) throw new Error('Agent belongs to an attached parent');
-    if (current?.rpc && !current.rpc.exited) { current.record.parentId = parentId; current.record.parentInfo = parents.get(parentId)?.identity; manager.storage.save(current.record); return { ...manager.summary(current), reattached: true }; }
-    const result = await manager.resume(v.agentId); const agent = manager.get(v.agentId); agent.record.parentId = parentId; agent.record.parentInfo = parents.get(parentId)?.identity; manager.storage.save(agent.record); return result;
+    if (current?.rpc && !current.rpc.exited) {
+      current.record.parentId = parentId;
+      current.record.parentInfo = normalizeParentInfo(explicit, current.record.parentInfo);
+      manager.storage.save(current.record);
+      return { ...manager.summary(current), reattached: true };
+    }
+    const result = await manager.resume(v.agentId, v);
+    const agent = manager.get(v.agentId);
+    agent.record.parentId = parentId;
+    agent.record.parentInfo = normalizeParentInfo(explicit, agent.record.parentInfo);
+    manager.storage.save(agent.record);
+    return manager.summary(agent);
+  }
+  if (method === 'bindSession') {
+    const identity = normalizeParentInfo(v.parent, parents.get(parentId)?.identity);
+    parents.set(parentId, { ...parent, connected: true, identity, lastSeen: Date.now() });
+    const ids = Array.isArray(v.agentIds) && v.agentIds.length ? v.agentIds : owned().map(a => a.record.id);
+    const bound = [];
+    for (const id of ids) {
+      const target = manager.get(id);
+      if (target.record.parentId !== parentId && parents.get(target.record.parentId)?.connected && processAlive(parents.get(target.record.parentId).pid)) {
+        throw new Error('Agent belongs to another parent; explicitly resume only after its parent detaches.');
+      }
+      bound.push(manager.bindParentInfo(id, identity));
+    }
+    return { identity, boundAgents: bound.map(a => a.id) };
   }
   if (method === 'poll') {
     const ids = owned().map(value => value.record.id);

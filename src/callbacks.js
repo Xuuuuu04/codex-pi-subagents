@@ -1,18 +1,22 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { maxAgentLimit } from './manager.js';
+import { atomicWriteJson } from './storage.js';
 
+const waitScript = fileURLToPath(new URL('../scripts/wait-events.js', import.meta.url));
 export const callbackEvents = ['settled', 'question', 'process_failed', 'budget_limit', 'control_failed', 'message'];
 const defaultEvents = ['settled', 'question', 'process_failed', 'budget_limit', 'control_failed'];
 export const callbackShape = z.object({
   enabled: z.boolean().default(true),
   codexThreadId: z.string().regex(/^[0-9a-f-]{36}$/).optional(),
+  antigravitySessionId: z.string().min(1).max(200).optional(),
+  antigravityCliResume: z.boolean().default(false),
   events: z.array(z.enum(callbackEvents)).min(1).optional(),
 });
 
-/** Text a parent model receives when a child needs attention. Bounded so a callback never floods context. */
 export function callbackText(event) {
   const head = `[pi-subagents callback] agent ${event.agentId} event=${event.type} sequence=${event.sequence}`;
   const next = `Continue with wait_agent(agentIds=["${event.agentId}"], after={"${event.agentId}": ${event.sequence}}) or read_agent.`;
@@ -22,43 +26,92 @@ export function callbackText(event) {
   return `${head}\n${String(event.reason || event.error || '').slice(0, 1000)}\n${next}`;
 }
 
-/**
- * Parent wake-up callbacks owned by one MCP bridge. Runs only in the bridge, so it works with an already running
- * controller. Claude Code receives channel notifications; Codex receives `codex queue` messages for a given thread.
- */
+export function eventSnapshot(event) {
+  return {
+    sequence: event.sequence,
+    type: event.type,
+    time: event.time || new Date().toISOString(),
+    ...(event.status ? { status: event.status } : {}),
+    ...(event.questionId ? { questionId: event.questionId } : {}),
+    ...(event.question ? { question: String(event.question).slice(0, 4000) } : {}),
+    ...(event.text ? { text: String(event.text).slice(-3000) } : {}),
+    ...(event.message ? { message: String(event.message).slice(0, 3000) } : {}),
+    ...(event.reason ? { reason: String(event.reason).slice(0, 1000) } : {}),
+    ...(event.error ? { error: String(event.error).slice(0, 1000) } : {}),
+  };
+}
+
 export class Callbacks {
-  constructor({ root, server, codexExecutable = process.env.CODEX_EXECUTABLE || 'codex', run = execFile }) {
+  constructor({ root, server, codexExecutable = process.env.CODEX_EXECUTABLE || 'codex', agyExecutable = process.env.AGY_EXECUTABLE || 'agy', run = execFile }) {
     this.directory = path.join(root, 'callbacks');
-    this.server = server; this.codexExecutable = codexExecutable; this.run = run;
+    this.server = server; this.codexExecutable = codexExecutable; this.agyExecutable = agyExecutable; this.run = run;
     this.queues = new Map();
   }
   file(agentId) {
     if (!/^[0-9a-f-]{36}$/.test(agentId)) throw new Error('Invalid agent ID');
     return path.join(this.directory, agentId + '.json');
   }
-  get(agentId) { try { return JSON.parse(fs.readFileSync(this.file(agentId), 'utf8')); } catch { return null; } }
+  get(agentId) {
+    try { return JSON.parse(fs.readFileSync(this.file(agentId), 'utf8')); }
+    catch (error) { if (error?.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
+  }
   save(agentId, value) {
-    fs.mkdirSync(this.directory, { recursive: true, mode: 0o700 });
-    const target = this.file(agentId), temp = target + `.${process.pid}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(value), { mode: 0o600 }); fs.renameSync(temp, target);
+    atomicWriteJson(this.file(agentId), value);
     return value;
   }
   host() {
     const name = this.server.getClientVersion()?.name || '';
-    return /codex/i.test(name) ? 'codex' : /claude/i.test(name) ? 'claude' : 'other';
+    if (/codex/i.test(name)) return 'codex';
+    if (/claude/i.test(name)) return 'claude';
+    if (/antigravity|agy|gemini/i.test(name) || process.env.ANTIGRAVITY_CONVERSATION_ID || process.env.ANTIGRAVITY_AGENT) return 'antigravity';
+    return 'other';
   }
   routes(config) {
-    const host = this.host();
-    return { claudeChannel: host === 'claude', codexQueue: Boolean(config.codexThreadId) };
+    const host = config.host || this.host();
+    const base = { claudeChannel: host === 'claude', codexQueue: Boolean(config.codexThreadId) };
+    if (host !== 'antigravity' && !config.antigravitySessionId) return base;
+    return {
+      ...base,
+      antigravityHook: Boolean(config.antigravitySessionId),
+      antigravityCli: Boolean(config.antigravitySessionId && config.antigravityCliResume),
+      antigravityWaitCommand: config.antigravitySessionId
+        ? `node "${waitScript}" --session ${config.antigravitySessionId}`
+        : `node "${waitScript}" --agent ${config.agentId}`,
+    };
   }
-  /** Register or change callbacks. Events at or before `since` are history and never fire. */
   configure(agentId, options = {}, since = 0) {
     const old = this.get(agentId);
-    const value = { agentId, enabled: options.enabled ?? true, events: options.events || old?.events || defaultEvents,
+    const host = old?.host || this.host();
+    const envSessionId = host === 'codex' || host === 'claude' ? undefined : process.env.ANTIGRAVITY_CONVERSATION_ID;
+    const antigravitySessionId = options.antigravitySessionId || old?.antigravitySessionId || envSessionId || undefined;
+    const delivered = Math.max(since, old?.antigravityDeliveredSeq || 0);
+    const value = {
+      agentId,
+      enabled: options.enabled ?? true,
+      events: options.events || old?.events || defaultEvents,
       codexThreadId: options.codexThreadId || old?.codexThreadId || process.env.CODEX_THREAD_ID || undefined,
-      since: Math.max(since, old?.since || 0), lastDelivery: old?.lastDelivery, updatedAt: new Date().toISOString() };
+      antigravitySessionId,
+      antigravityCliResume: options.antigravityCliResume ?? old?.antigravityCliResume ?? false,
+      host,
+      since: Math.max(since, old?.since || 0),
+      antigravityDeliveredSeq: delivered,
+      lastEvent: old?.lastEvent,
+      lastDelivery: old?.lastDelivery,
+      updatedAt: new Date().toISOString(),
+    };
     this.save(agentId, value);
     return { ...value, routes: this.routes(value) };
+  }
+  markObserved(agentId, sequence, source = 'wait_agent') {
+    if (!sequence || !/^[0-9a-f-]{36}$/.test(agentId)) return null;
+    const old = this.get(agentId);
+    if (!old) return null;
+    const next = Math.max(old.antigravityDeliveredSeq || 0, sequence);
+    if (next <= (old.antigravityDeliveredSeq || 0)) return old;
+    old.antigravityDeliveredSeq = next;
+    old.lastObservedBy = source;
+    old.updatedAt = new Date().toISOString();
+    return this.save(agentId, old);
   }
   handle(event) {
     const config = this.get(event.agentId);
@@ -72,7 +125,9 @@ export class Callbacks {
   async deliver(event) {
     const config = this.get(event.agentId);
     if (!config || event.sequence <= config.since) return;
-    config.since = event.sequence; this.save(event.agentId, config); // Mark first: a failed route is reported, not replayed.
+    config.since = event.sequence;
+    config.lastEvent = eventSnapshot(event);
+    this.save(event.agentId, config);
     const content = callbackText(event), routes = this.routes(config), results = {};
     if (routes.claudeChannel) {
       try {
@@ -86,18 +141,26 @@ export class Callbacks {
           error => resolve(error ? `failed: ${error.message.split('\n')[0]}` : 'queued'));
       });
     }
+    if (routes.antigravityCli) {
+      results.antigravityCli = await new Promise(resolve => {
+        this.run(this.agyExecutable, ['--conversation', config.antigravitySessionId, '--mode', 'auto', '-p', content], { timeout: 30000, maxBuffer: 64 * 1024 },
+          error => resolve(error ? `failed: ${error.message.split('\n')[0]}` : 'resumed'));
+      });
+      if (results.antigravityCli === 'resumed') config.antigravityDeliveredSeq = Math.max(config.antigravityDeliveredSeq || 0, event.sequence);
+    } else if (routes.antigravityHook) {
+      results.antigravityHook = 'pending_hook_or_watcher';
+    }
     config.lastDelivery = { sequence: event.sequence, type: event.type, time: new Date().toISOString(), results };
     this.save(event.agentId, config);
     return results;
   }
 }
 
-/** Install callback tools and capability. Channels only wake Claude Code sessions that enabled this server as a channel. */
 export function installCallbacks(server, manager, register) {
   server.server.registerCapabilities({ experimental: { 'claude/channel': {} } });
   const callbacks = new Callbacks({ root: manager.storage.root, server: server.server });
   manager.on('event', event => { callbacks.handle(event); });
-  register('set_agent_callback', 'Configure parent wake-up callbacks for owned agents. Claude Code receives channel notifications (requires the session to enable this server as a channel); Codex receives `codex queue` messages when codexThreadId is set (read it with `echo $CODEX_THREAD_ID` in your shell). Default events: settled, question, process_failed, budget_limit, control_failed. A callback is a hint to resume coordinating, not acceptance of work.', {
+  register('set_agent_callback', 'Configure parent wake-up callbacks for owned agents. Supports Antigravity hooks/background watcher (pass callback.antigravitySessionId = Conversation ID, optionally antigravityCliResume=true), Claude Code channel notifications, and Codex queue (codexThreadId). Default events: settled, question, process_failed, budget_limit, control_failed.', {
     agentIds: z.array(z.string().uuid()).min(1).max(maxAgentLimit), ...callbackShape.shape,
   }, async ({ agentIds, ...options }) => {
     const result = [];

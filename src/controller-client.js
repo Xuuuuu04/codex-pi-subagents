@@ -9,10 +9,31 @@ import { defaultMaxAgents } from './manager.js';
 import { processAlive } from './storage.js';
 
 const script = fileURLToPath(new URL('./controller.js', import.meta.url));
-/** 当前桥接进程所属的父会话：Codex 用 CODEX_THREAD_ID，Claude Code 用 CLAUDE_CODE_SESSION_ID（桌面端另有 host 会话编号）。 */
-export function parentIdentity(env = process.env) {
-  const kind = env.CODEX_THREAD_ID ? 'codex' : env.CLAUDE_CODE_SESSION_ID ? 'claude' : 'unknown';
-  return { kind, sessionId: env.CODEX_THREAD_ID || env.CLAUDE_CODE_SESSION_ID, hostSessionId: env.CLAUDE_CODE_HOST_SESSION_ID, cwd: process.cwd() };
+export function normalizeParentInfo(input, fallback) {
+  const source = input && typeof input === 'object' ? input : {};
+  const result = {};
+  if (typeof source.kind === 'string' && ['antigravity', 'codex', 'claude', 'other', 'unknown'].includes(source.kind)) result.kind = source.kind;
+  else if (fallback?.kind) result.kind = fallback.kind;
+  for (const key of ['sessionId', 'hostSessionId', 'projectId']) {
+    const val = typeof source[key] === 'string' && source[key].trim() && source[key].length <= 500 ? source[key].trim() : fallback?.[key];
+    if (val) result[key] = val;
+  }
+  const cwd = typeof source.cwd === 'string' && path.isAbsolute(source.cwd) && source.cwd.length <= 500 ? source.cwd : fallback?.cwd;
+  if (cwd) result.cwd = cwd;
+  return Object.keys(result).length ? result : undefined;
+}
+export function parentIdentity(env = process.env, clientName = '') {
+  const kind = env.CODEX_THREAD_ID ? 'codex'
+    : (env.ANTIGRAVITY_CONVERSATION_ID || env.ANTIGRAVITY_AGENT || env.ANTIGRAVITY_PROJECT_ID || /antigravity|agy/i.test(clientName)) ? 'antigravity'
+      : env.CLAUDE_CODE_SESSION_ID || /claude/i.test(clientName) ? 'claude'
+        : /codex/i.test(clientName) ? 'codex' : 'unknown';
+  return normalizeParentInfo({
+    kind,
+    sessionId: env.ANTIGRAVITY_CONVERSATION_ID || env.CODEX_THREAD_ID || env.CLAUDE_CODE_SESSION_ID,
+    hostSessionId: env.ANTIGRAVITY_TRAJECTORY_ID || env.CLAUDE_CODE_HOST_SESSION_ID,
+    projectId: env.ANTIGRAVITY_PROJECT_ID,
+    cwd: process.cwd(),
+  });
 }
 /** Private Unix-socket bridge. Closing an MCP bridge detaches its parent without stopping Pi. */
 export class ControllerClient extends EventEmitter {
@@ -53,7 +74,8 @@ export class ControllerClient extends EventEmitter {
   setModel(agentId, options) { return this.call('setModel', { agentId, ...options }); }
   interrupt(agentId) { return this.call('interrupt', { agentId }); }
   closeAgent(agentId) { return this.call('closeAgent', { agentId }); }
-  resume(agentId) { return this.call('resume', { agentId }); }
+  resume(agentId, options = {}) { return this.call('resume', { agentId, ...options }); }
+  rebindParent(parent) { return this.call('attach', { pid: process.pid, parent }); }
   async watch() {
     const after = {};
     while (!this.closed) {

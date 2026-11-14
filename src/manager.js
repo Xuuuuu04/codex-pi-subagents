@@ -6,6 +6,7 @@ import { EventEmitter } from 'node:events';
 import { PiProcess } from './rpc-client.js';
 import { LiveStream } from './live-stream.js';
 import { Storage, processAlive } from './storage.js';
+import { normalizeParentInfo } from './controller-client.js';
 import { MessageChannel } from './messages.js';
 import { MessageStore } from './message-store.js';
 import { agentPolicy, assertModelAllowed, reserveRequest } from './agent-policy.js';
@@ -42,7 +43,7 @@ export class Manager extends EventEmitter {
   }
   summary(agent) {
     const r = agent.record;
-    return { id: r.id, name: r.name, status: r.status, model: r.model, thinking: r.thinking, workspace: r.workspace,
+    return { id: r.id, name: r.name, status: r.status, model: r.model, thinking: r.thinking, workspace: r.workspace, parentInfo: r.parentInfo,
       policy: r.policy, modelRequests: r.modelRequests, limitReason: r.limitReason, sequence: r.sequence, questionIds: r.questionIds, lastText: r.lastText?.slice(-12000), error: r.error,
       temporaryModel: r.restoreModel, usage: r.usage, sessionFile: r.sessionFile, createdAt: r.createdAt, updatedAt: r.updatedAt };
   }
@@ -103,7 +104,7 @@ export class Manager extends EventEmitter {
     record.owner = this.owner; record.ownerPid = process.pid;
     return lock;
   }
-  async spawn({ cwd, prompt, provider, model, name, ownedPaths, workspaceMode = 'auto', baseRef, thinking = 'high', context = '', parentId, parentInfo, policy }) {
+  async spawn({ cwd, prompt, provider, model, name, ownedPaths, workspaceMode = 'auto', baseRef, thinking = 'high', context = '', parentId, parentInfo, parentSession, antigravitySessionId, policy }) {
     if (!path.isAbsolute(cwd)) throw new Error('cwd must be an absolute directory path');
     this.capacity(); await this.validateModel({ provider, model }); this.capacity();
     const paths = validateOwnedPaths(ownedPaths);
@@ -118,7 +119,9 @@ export class Manager extends EventEmitter {
       }
     }
     const id = randomUUID();
-    const record = { id, parentId, parentInfo, policy: agentPolicy(policy, { provider, model }), modelRequests: 0, name: name || id.slice(0, 8), model: { provider, model }, thinking, ownedPaths: paths, context,
+    const explicitParent = antigravitySessionId ? { kind: 'antigravity', sessionId: antigravitySessionId, cwd: original } : parentSession ? { ...parentSession, cwd: parentSession.cwd || original } : null;
+    const resolvedParentInfo = normalizeParentInfo(explicitParent, parentInfo);
+    const record = { id, parentId, parentInfo: resolvedParentInfo, policy: agentPolicy(policy, { provider, model }), modelRequests: 0, name: name || id.slice(0, 8), model: { provider, model }, thinking, ownedPaths: paths, context,
       status: 'starting', sequence: 0, questionIds: [], createdAt: new Date().toISOString(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reportedCost: 0 } };
     const lock = this.claim(record);
     try {
@@ -296,13 +299,17 @@ export class Manager extends EventEmitter {
       return { ...this.summary(agent), ...(shutdownError ? { shutdownError } : {}) };
     });
   }
-  async resume(id) {
+  async resume(id, options = {}) {
     this.capacity();
     const existing = this.agents.get(id);
     if (existing?.rpc && !existing.rpc.exited) throw new Error('Agent already has a live process');
     const record = this.storage.load(id);
     this.storage.repairEvents(id);
     record.sequence = Math.max(record.sequence, this.storage.events(id).at(-1)?.sequence || 0);
+    const explicitParent = options?.antigravitySessionId
+      ? { kind: 'antigravity', sessionId: options.antigravitySessionId, cwd: record.workspace?.sourceCwd || record.workspace?.cwd }
+      : options?.parentSession || null;
+    if (explicitParent) record.parentInfo = normalizeParentInfo(explicitParent, record.parentInfo);
     for (const question of this.messages.all(id).filter(value => value.direction === 'question' && value.state === 'stored')) this.messages.update(id, question.messageId, { state: 'cancelled' });
     if (!record.sessionFile || !fs.existsSync(record.sessionFile)) throw new Error('No saved Pi session is available');
     await this.validateModel(record.model); this.capacity();
@@ -311,6 +318,15 @@ export class Manager extends EventEmitter {
     this.agents.set(id, agent);
     try { await this.launch(agent); this.event(agent, 'resumed'); return this.summary(agent); }
     catch (error) { record.status = 'failed'; record.error = error.message; this.storage.save(record); if (agent.rpc) await agent.rpc.close(); this.release(lock); throw error; }
+  }
+  bindParentInfo(id, parent) {
+    const agent = this.get(id);
+    const merged = normalizeParentInfo(parent, agent.record.parentInfo);
+    if (merged) {
+      agent.record.parentInfo = merged;
+      this.storage.save(agent.record);
+    }
+    return this.summary(agent);
   }
   list(includeSaved = false) {
     const current = [...this.agents.values()].map(a => this.summary(a));

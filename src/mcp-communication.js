@@ -1,5 +1,6 @@
 import { ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { SubscribeRequestSchema, UnsubscribeRequestSchema } from '@modelcontextprotocol/sdk/types.js';
+import { parentIdentity } from './controller-client.js';
 
 /** Standard resources, subscriptions and log notifications; host UI/turn wake-up is a separate capability. */
 export function installCommunication(server, manager, register) {
@@ -23,10 +24,20 @@ export function installCommunication(server, manager, register) {
     client: server.server.getClientVersion(), negotiated: server.server.getClientCapabilities(),
     server: { durableMessages: true, independentController: Boolean(manager.call), resourceSubscriptions: true, logNotifications: true, progressNotifications: true, tasks: 'experimental MCP 2025-11-25' },
     callbacks: {
+      antigravity: 'Pass antigravitySessionId (Conversation ID) on spawn_agent/resume_agent or call bind_session. Supports PreInvocation/Stop hooks, reactive background watcher (scripts/wait-events.js --session <id>), and opt-in agy CLI resume.',
       claudeChannel: 'notifications/claude/channel; wakes Claude Code only when the session enabled this server as a channel. Otherwise run scripts/wait-events.js as a background command.',
       codexQueue: 'codex queue --thread <CODEX_THREAD_ID>; set callback.codexThreadId on spawn_agent or set_agent_callback.',
     },
     automaticTurnWake: { portable: false, reason: 'MCP has no portable model-turn wake API; callbacks use host-specific channels and still need actual inspection.' },
   }), true);
-  if (manager.watch) { server.server.oninitialized = () => { manager.watch().catch(error => process.stderr.write(`Pi watcher: ${error.message}\n`)); }; }
+  if (manager.watch) {
+    server.server.oninitialized = () => {
+      const clientInfo = server.server.getClientVersion();
+      if (clientInfo?.name && manager.rebindParent) {
+        const nextIdentity = parentIdentity(process.env, clientInfo.name);
+        if (nextIdentity) manager.rebindParent(nextIdentity).catch(error => process.stderr.write(`Pi parent rebind failed: ${error.message}\n`));
+      }
+      manager.watch().catch(error => process.stderr.write(`Pi watcher: ${error.message}\n`));
+    };
+  }
 }
