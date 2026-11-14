@@ -1,435 +1,443 @@
 import {
-  el, statusLabel, agentHost, hostMeta, showToast, copyText, isWorking, agentSessionId, apiFetch,
+  $, morph, mount, working, notifyOn, clock, duration, shortDuration, longDuration, ago,
+  modelName, elapsedOf, showToast, apiFetch, store, syncSeg, bindResizers,
 } from './dom.js';
-import { renderThread } from './conversation.js';
+import { bindTips, renderSpeed, drawSpeed, subscribeSpeed, closeSpeed, tickSpeed } from './charts.js';
+import { renderConversation, refreshTail } from './conversation.js';
+import { renderOverview, renderChips, renderList, toggleGroup } from './sidebar.js';
 import {
-  renderStatusPanel, renderSpeedPanel, renderContextPanel,
-  renderLanePanel, renderChangesPanel,
+  pairTools, renderLane, renderHead, renderContext, loadChanges, renderChanges,
+  renderToolsTab, renderEventsTab, renderResultTab, renderInfoTab,
 } from './panels.js';
-import {
-  renderDock, renderSystemDialog, openAgentMenu,
-  openGroupMenu, openRenameDialog, openMoveDialog,
-} from './dialogs.js';
-import {
-  visibleAgents, renderHeaderAndChips, renderSidebarList,
-} from './sidebar.js';
+import { closeMenu, agentMenu, groupMenu, renderSystemDialog } from './dialogs.js';
 import { openSettingsDialog } from './settings.js';
 
-const dom = {
-  app: document.getElementById('app'),
-  sideToggle: document.getElementById('side-toggle'),
-  panelToggle: document.getElementById('panel-toggle'),
-  search: document.getElementById('search'),
-  hostChips: document.getElementById('host-chips'),
-  chips: document.getElementById('chips'),
-  list: document.getElementById('list'),
-  dist: document.getElementById('dist'),
-  totals: document.getElementById('totals'),
-  connection: document.getElementById('connection'),
-  notify: document.getElementById('notify'),
-  settingsBtn: document.getElementById('settings-btn'),
-  sysBtn: document.getElementById('sys-btn'),
-  helpBtn: document.getElementById('help-btn'),
-  theme: document.getElementById('theme'),
-  pause: document.getElementById('pause'),
-  alerts: document.getElementById('d-alerts'),
-  now: document.getElementById('d-now'),
-  views: document.getElementById('views'),
-  threadSearch: document.getElementById('thread-search'),
-  records: document.getElementById('records'),
-  ptabs: document.getElementById('ptabs'),
-  pStatus: document.getElementById('p-status'),
-  pSpeed: document.getElementById('p-speed'),
-  lane: document.getElementById('lane'),
-  pContext: document.getElementById('p-context'),
-  pChanges: document.getElementById('p-changes'),
-  tip: document.getElementById('chart-tip'),
-  menu: document.getElementById('menu'),
-  dialog: document.getElementById('dialog'),
-  sysDialog: document.getElementById('sys-dialog'),
-  settingsDialog: document.getElementById('settings-dialog'),
-  helpDialog: document.getElementById('help-dialog'),
-};
+if (location.hash) history.replaceState(null, '', location.pathname);
+try { sessionStorage.removeItem('pi-dashboard-token'); } catch {}
 
 const state = {
-  agents: [],
-  groupNames: {},
-  errors: [],
-  selectedId: null,
-  detail: null,
-  detailStamp: '',
-  filterStatus: 'all',
-  filterHost: 'all',
-  search: '',
-  threadSearch: '',
-  tab: 'status',
-  paused: false,
-  changesCache: {},
-  liveSpeed: null,
-  lastQuestions: new Set(),
+  agents: [], groupNames: {}, selected: store.get('selected', ''), filter: store.get('filter', 'all'),
+  collapsed: new Set(store.get('collapsed2', [])), showClosed: new Set(store.get('showClosed', [])),
+  tab: store.get('tab', 'messages'), ptab: store.get('ptab', 'overview'), hideTools: store.get('hideTools', false),
+  paused: false, fetching: false, detailFetching: false, detail: null, recordsKey: '', renderedView: '',
+  previous: new Map(), notify: store.get('notify', false), refreshedAt: null,
+  sideHidden: store.get('sideHidden', null), panelHidden: store.get('panelHidden', null),
+  listRendered: false, listKey: '', changes: new Map(), sseActive: false,
 };
 
-let eventsSource = null;
-let speedSource = null;
-let speedAgentId = null;
-let pollTimer = null;
+const narrow = () => innerWidth <= 760;
+const compact = () => innerWidth <= 1180;
+const nearBottom = box => box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+const post = (path, body) => apiFetch(path, { method: 'POST', body: JSON.stringify(body) });
 
-function setConn(text, kind) {
-  dom.connection.textContent = text;
-  dom.connection.className = `conn-pill conn-${kind}`;
+function showError(message) {
+  const err = $('#error');
+  err.textContent = message || '';
+  err.hidden = !message;
 }
 
-const markAgent = async (id, status) => {
-  await apiFetch(`/api/agents/${id}/mark`, { method: 'POST', body: JSON.stringify({ status }) });
-  await refreshNow();
+async function markAgent(id, status) {
+  await post(`/api/agents/${id}/mark`, { status });
+  showToast(status === 'closed' ? '已标记为已关闭' : status === 'completed' ? '已标记为已结束' : '已取消标记');
+  await refresh(true);
+}
+
+async function moveAgent(id, group) {
+  await post(`/api/agents/${id}/move`, { group });
+  showToast(group ? '已移动' : '已移回原分组');
+  await refresh(true);
+}
+
+async function renameGroup(key, name) {
+  await post('/api/groups', { key, name });
+  showToast(name ? '已重命名' : '已恢复默认名称');
+  await refresh(true);
+}
+
+async function batchClose(closable) {
+  let done = 0, lastErr = '';
+  for (const a of closable) {
+    try { await post(`/api/agents/${a.id}/mark`, { status: 'closed' }); done++; }
+    catch (err) { lastErr = err.message; }
+  }
+  showToast(lastErr ? `已关闭 ${done}/${closable.length} 个（${lastErr}）` : `已关闭 ${done} 个会话`);
+  await refresh(true);
+}
+
+const listHandlers = {
+  onSelect: select,
+  onAgentMenu: (a, x, y) => agentMenu(a, x, y, state, menuActions),
+  onGroupMenu: (g, x, y) => groupMenu(g, x, y, state, menuActions),
+  onMoveAgent: (id, key) => moveAgent(id, key).catch(err => showToast(err.message)),
 };
 
-const moveAgent = async (id, group) => {
-  await apiFetch(`/api/agents/${id}/move`, { method: 'POST', body: JSON.stringify({ group }) });
-  await refreshNow();
+const menuActions = {
+  onSelect: select, onMark: markAgent, onMove: moveAgent,
+  onToggleGroup: key => toggleGroup(key, state, listHandlers),
+  onRenameGroup: renameGroup, onBatchClose: batchClose,
 };
 
-const renameGroup = async (key, name) => {
-  await apiFetch('/api/groups', { method: 'POST', body: JSON.stringify({ key, name }) });
-  await refreshNow();
-};
+function pickFilter(key) {
+  state.filter = key;
+  store.set('filter', key);
+  renderChips(state, pickFilter);
+  renderList(state, listHandlers);
+}
 
-function notifyQuestions() {
-  const activeQuestions = new Map();
+function select(id) {
+  if (narrow()) setSide(false);
+  if (state.selected === id && state.detail) return;
+  state.selected = id;
+  store.set('selected', id);
+  state.recordsKey = '';
+  state.detail = null;
+  for (const node of document.querySelectorAll('.row')) node.setAttribute('aria-current', String(node.dataset.agent === id));
+  applyLayout();
+  refreshDetail().catch(error => showError(error.message));
+}
+
+function moveSelection(step) {
+  const rows = [...document.querySelectorAll('.row')];
+  if (!rows.length) return;
+  const index = rows.findIndex(r => r.dataset.agent === state.selected);
+  const next = rows[Math.min(rows.length - 1, Math.max(0, index + step))];
+  select(next.dataset.agent);
+  next.focus();
+  next.scrollIntoView({ block: 'nearest' });
+}
+
+function syncJump() {
+  const box = $('#scroller');
+  $('#jump').hidden = state.tab !== 'messages' || nearBottom(box);
+}
+
+function conversationTab(data, expanded) {
+  const note = data.transcriptError
+    ? `会话内容暂时无法读取：${data.transcriptError}`
+    : data.live ? '正在逐字同步模型输出与工具输出' : `显示最近 ${data.messages.length} 条已保存内容`;
+  return [renderConversation(data, expanded), note];
+}
+
+function renderRecords() {
+  const data = state.detail;
+  if (!data) return;
+  const records = $('#records');
+  const box = $('#scroller');
+  const key = JSON.stringify([
+    state.tab, state.hideTools, data.agent.sequence, data.agent.status,
+    data.messages.length, data.messages.at(-1)?.id, data.live?.updatedAt,
+    data.transcriptError, data.agent.lastText?.length,
+  ]);
+  syncSeg($('#views'), 'tab', state.tab);
+  if (key === state.recordsKey) return;
+  state.recordsKey = key;
+  const expanded = new Map([
+    ...[...records.querySelectorAll('details')].map(node => [node.dataset.key, node.open]),
+    ...[...records.querySelectorAll('.bubble[data-key]')].map(node => [node.dataset.key, !node.classList.contains('clamped')]),
+  ]);
+  const view = `${data.agent.id}:${state.tab}`;
+  const fresh = state.renderedView !== view;
+  state.renderedView = view;
+  const follow = state.tab === 'messages' && (fresh || nearBottom(box));
+  const scroll = box.scrollTop;
+  const tools = pairTools(data.agent.events);
+  const [content, note] = state.tab === 'messages' ? conversationTab(data, expanded)
+    : state.tab === 'tools' ? renderToolsTab(tools)
+    : state.tab === 'events' ? renderEventsTab(data.agent, state, () => { state.recordsKey = ''; renderRecords(); })
+    : state.tab === 'result' ? renderResultTab(data.agent)
+    : renderInfoTab(data.agent);
+  records.classList.toggle('enter', fresh);
+  if (fresh || state.tab !== 'messages') mount(records, content);
+  else morph(records, [content].flat().map(node => typeof node === 'string' ? document.createTextNode(node) : node));
+  for (const live of records.querySelectorAll('.think-text.streaming, .live-tail .term-body')) live.scrollTop = live.scrollHeight;
+  if (note !== $('#record-note').textContent) $('#record-note').textContent = note;
+  box.scrollTop = follow ? box.scrollHeight : fresh ? 0 : scroll;
+  syncJump();
+}
+
+let typingFrame = 0;
+requestAnimationFrame(function pump(now) {
+  requestAnimationFrame(pump);
+  if (now - typingFrame < 32 || state.tab !== 'messages') return;
+  typingFrame = now;
+  const box = $('#scroller');
+  const follow = nearBottom(box);
+  if (!refreshTail()) return;
+  for (const live of $('#records').querySelectorAll('.think-text.streaming')) live.scrollTop = live.scrollHeight;
+  if (follow) box.scrollTop = box.scrollHeight;
+});
+
+function renderPanel(data) {
+  for (const view of document.querySelectorAll('[data-pview]')) view.hidden = view.dataset.pview !== state.ptab;
+  syncSeg($('#ptabs'), 'ptab', state.ptab);
+  if (state.ptab === 'context') renderContext(data, state.ptab);
+  if (state.ptab === 'changes') { loadChanges(data.agent.id, state, apiFetch); renderChanges(data, state, apiFetch); }
+}
+
+async function refreshDetail() {
+  if (!state.selected || state.detailFetching) return;
+  state.detailFetching = true;
+  let data;
+  const requested = state.selected;
+  try { data = await apiFetch(`/api/agents/${requested}`); }
+  finally { state.detailFetching = false; }
+  if (state.selected !== requested) return;
+  state.detail = data;
+  const tools = pairTools(data.agent.events);
+  $('#placeholder').hidden = true;
+  renderHead(data, tools, state);
+  renderSpeed(data, state.paused);
+  renderLane(data.agent, tools);
+  renderRecords();
+  renderPanel(data);
+}
+
+function notifyChanges() {
   for (const a of state.agents) {
-    for (const q of a.questions || []) activeQuestions.set(q.questionId, { agent: a, q });
-  }
-  for (const [qid, item] of activeQuestions) {
-    if (!state.lastQuestions.has(qid) && document.hidden && Notification?.permission === 'granted') {
-      new Notification(`子代理 ${item.agent.name || item.agent.id.slice(0, 8)} 正在等答复`, { body: item.q.question });
+    const before = state.previous.get(a.id);
+    if (state.notify && before && before !== a.status && notifyOn[a.status] && 'Notification' in window && Notification.permission === 'granted') {
+      const n = new Notification(`${a.name || a.id.slice(0, 8)} ${notifyOn[a.status]}`, { body: modelName(a), tag: `${a.id}:${a.status}` });
+      n.onclick = () => { window.focus(); select(a.id); };
     }
-  }
-  state.lastQuestions = new Set(activeQuestions.keys());
-}
-
-function renderMainHeader() {
-  const agent = state.detail?.agent || state.agents.find(a => a.id === state.selectedId);
-  if (!agent) {
-    dom.views.replaceChildren(el('span', { className: 'muted' }, '未选择子代理'));
-    return;
-  }
-  const host = hostMeta(agentHost(agent));
-  const sid = agentSessionId(agent);
-  dom.views.replaceChildren(
-    el('span', { className: `badge status-${agent.status}` }, statusLabel(agent.status)),
-    el('strong', { className: 'view-title' }, agent.name || agent.id.slice(0, 8)),
-    el('span', { className: `badge ${host.cls}` }, host.label),
-    sid ? el('button', {
-      type: 'button',
-      className: 'btn btn-xs',
-      onclick: () => copyText(sid, '已复制会话编号'),
-    }, `会话 ${sid.slice(0, 10)}`) : null,
-    agent.watcherActive ? el('span', { className: 'badge badge-watch' }, '监听活跃') : null,
-  );
-}
-
-function renderActiveInspector() {
-  const detail = state.detail;
-  dom.pStatus.hidden = state.tab !== 'status';
-  dom.pSpeed.hidden = state.tab !== 'speed';
-  dom.lane.hidden = state.tab !== 'lane';
-  dom.pContext.hidden = state.tab !== 'context';
-  dom.pChanges.hidden = state.tab !== 'changes';
-  for (const btn of dom.ptabs.querySelectorAll('button')) {
-    btn.classList.toggle('active', btn.dataset.tab === state.tab);
-  }
-  if (state.tab === 'status') {
-    renderStatusPanel(dom.pStatus, detail, {
-      onMark: markAgent,
-      onMoveDialog: agent => openMoveDialog(dom.dialog, agent, moveAgent),
-    });
-  } else if (state.tab === 'speed') {
-    renderSpeedPanel(dom.pSpeed, detail, state.liveSpeed, dom.tip);
-  } else if (state.tab === 'lane') {
-    renderLanePanel(dom.lane, detail);
-  } else if (state.tab === 'context') {
-    renderContextPanel(dom.pContext, detail);
-  } else if (state.tab === 'changes') {
-    renderChangesPanel(dom.pChanges, detail?.agent?.id || state.selectedId, state.changesCache, apiFetch, () => state.selectedId);
+    state.previous.set(a.id, a.status);
   }
 }
 
-const sidebarHandlers = {
-  onSelect: id => selectAgent(id),
-  onAgentMenu: (agent, x, y) => openAgentMenu(dom.menu, agent, x, y, {
-    onMark: markAgent,
-    onMove: target => openMoveDialog(dom.dialog, target, moveAgent),
-  }),
-  onGroupMenu: (group, rect) => openGroupMenu(dom.menu, group, rect, {
-    onRename: g => openRenameDialog(dom.dialog, g, state.groupNames[g.key], renameGroup),
-    onBatchMark: async (items, status) => {
-      try {
-        for (const item of items) await apiFetch(`/api/agents/${item.id}/mark`, { method: 'POST', body: JSON.stringify({ status }) });
-      } catch (error) {
-        showToast(error?.message || '批量标记失败');
-      } finally {
-        await refreshNow();
-      }
-    },
-  }),
-};
-
-function renderAll() {
-  renderHeaderAndChips(dom, state, renderAll);
-  renderSidebarList(dom, state, sidebarHandlers);
-  renderDock(dom.alerts, dom.now, state.agents, selectAgent);
-  renderMainHeader();
-  renderThread(dom.records, state.detail, state.threadSearch);
-  renderActiveInspector();
+async function applyAgentsPayload(result) {
+  state.agents = result.agents || [];
+  state.groupNames = result.groupNames || {};
+  state.refreshedAt = result.refreshedAt;
+  if (!state.agents.some(a => a.id === state.selected)) {
+    const pick = state.agents.find(a => a.status === 'waiting') || state.agents.find(a => working.has(a.status)) || state.agents.find(a => a.status !== 'closed') || state.agents[0];
+    state.selected = pick?.id || '';
+    state.recordsKey = '';
+  }
+  notifyChanges();
+  renderOverview(state);
+  renderChips(state, pickFilter);
+  if ($('#menu').hidden) renderList(state, listHandlers);
+  applyLayout();
+  if (state.selected) await refreshDetail().catch(error => showError(error.message));
+  else {
+    $('#placeholder').hidden = false;
+    $('#records').replaceChildren();
+    $('#dock').hidden = true;
+    $('#placeholder-text').textContent = '还没有会话。创建子代理后，这里会实时显示它的进度。';
+  }
+  if (!state.paused) {
+    $('#live').className = 'live';
+    $('#connection').textContent = state.sseActive ? '实时推送' : `已更新 ${clock(result.refreshedAt)}`;
+  }
+  const errs = result.errors || [];
+  showError(errs.length ? `${errs.length} 个会话读取失败：${errs.map(e => `${e.id.slice(0, 8)} ${e.error}`).join('；')}` : '');
 }
 
-async function loadSelectedDetail(force = false) {
-  const targetId = state.selectedId;
-  if (!targetId) {
-    state.detail = null;
-    return;
-  }
-  const snap = state.agents.find(a => a.id === targetId);
-  const stamp = snap ? `${snap.id}:${snap.sequence}:${snap.status}:${snap.updatedAt}:${snap.marked}:${snap.movedTo}:${snap.contextWindow || ''}` : targetId;
-  const working = snap && isWorking(snap.status);
-  if (!force && state.detailStamp === stamp && !working) return;
+let sse = null;
+let pollTimer = null;
+function startPoll() { if (!pollTimer) pollTimer = setInterval(() => { if (!state.paused) refresh(); }, 2000); }
+function stopPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+
+function startEventsStream() {
+  if (state.paused || typeof EventSource === 'undefined') { startPoll(); return; }
+  if (sse) return;
+  const source = new EventSource('/api/events', { withCredentials: true });
+  source.onopen = () => {
+    state.sseActive = true;
+    stopPoll();
+    if (!state.paused) { $('#live').className = 'live'; $('#connection').textContent = '实时推送'; }
+  };
+  source.onmessage = event => { if (!state.paused) { try { applyAgentsPayload(JSON.parse(event.data)); } catch (err) { console.error(err); } } };
+  source.onerror = () => {
+    state.sseActive = false;
+    source.close();
+    if (sse === source) sse = null;
+    if (!state.paused) startPoll();
+  };
+  sse = source;
+}
+
+async function refresh(force = false) {
+  if (state.fetching || (state.paused && !force)) return;
+  state.fetching = true;
   try {
-    const detail = await apiFetch(`/api/agents/${targetId}`);
-    if (state.selectedId !== targetId) return;
-    state.detail = detail;
-    state.detailStamp = stamp;
+    const result = await apiFetch('/api/agents');
+    await applyAgentsPayload(result);
+    if (!sse && !state.paused) startEventsStream();
   } catch (error) {
-    if (state.selectedId !== targetId) return;
-    state.detail = snap
-      ? { agent: snap, messages: [], speeds: [], context: null, pullRequests: [], transcriptError: error.message }
-      : null;
+    $('#live').className = 'live failed';
+    $('#connection').textContent = '更新失败 · 保留上次数据';
+    showError(error.message);
+  } finally {
+    state.fetching = false;
   }
 }
 
-function syncSpeedStream() {
-  const agent = state.agents.find(a => a.id === state.selectedId);
-  if (!agent || !isWorking(agent.status) || state.paused) {
-    if (speedSource) { speedSource.close(); speedSource = null; }
-    speedAgentId = null;
-    state.liveSpeed = null;
+function tick() {
+  tickSpeed();
+  for (const node of document.querySelectorAll('[data-ago]')) node.textContent = ago(node.dataset.ago);
+  for (const node of document.querySelectorAll('[data-since]')) node.textContent = shortDuration(Date.now() - Number(node.dataset.since));
+  for (const node of document.querySelectorAll('[data-run-start]')) node.textContent = `正在工作 ${longDuration(Date.now() - Number(node.dataset.runStart))}`;
+  const agent = state.detail?.agent;
+  if (agent && working.has(agent.status)) {
+    for (const id of ['#d-elapsed', '#p-elapsed']) { const node = $(id); if (node) node.textContent = duration(elapsedOf(agent)); }
+  }
+}
+
+function setSide(open) {
+  state.sideHidden = !open;
+  if (!narrow()) store.set('sideHidden', state.sideHidden);
+  applyLayout();
+}
+
+function setPanel(open) {
+  state.panelHidden = !open;
+  if (!compact()) store.set('panelHidden', state.panelHidden);
+  applyLayout();
+  if (open && state.detail) { renderPanel(state.detail); renderLane(state.detail.agent, pairTools(state.detail.agent.events)); }
+}
+
+function applyLayout() {
+  const app = $('#app');
+  const sideHidden = narrow() ? state.sideHidden !== false : Boolean(state.sideHidden);
+  const panelHidden = !state.selected || (compact() ? state.panelHidden !== false : Boolean(state.panelHidden));
+  app.classList.toggle('side-hidden', sideHidden);
+  app.classList.toggle('panel-hidden', panelHidden);
+  $('#panel-toggle').setAttribute('aria-pressed', String(!panelHidden));
+}
+
+function setPaused(value) {
+  state.paused = value;
+  const button = $('#pause');
+  button.setAttribute('aria-pressed', String(value));
+  button.title = value ? '继续更新 (P)' : '暂停更新 (P)';
+  if (value) {
+    sse?.close(); sse = null; state.sseActive = false;
+    stopPoll();
+    closeSpeed();
+    $('#live').className = 'live paused';
+    $('#connection').textContent = '已暂停';
+  } else {
+    refresh(true);
+    startEventsStream();
+    if (state.selected) subscribeSpeed(state.selected, false);
+  }
+}
+
+function applyTheme(theme) {
+  if (theme) document.documentElement.dataset.theme = theme;
+  else delete document.documentElement.dataset.theme;
+  if (!theme && matchMedia('(prefers-color-scheme: dark)').matches) document.documentElement.dataset.theme = 'dark';
+}
+
+function rerenderCharts() {
+  if (!state.detail) return;
+  $('#p-context').dataset.key = '';
+  renderLane(state.detail.agent, pairTools(state.detail.agent.events));
+  drawSpeed();
+  renderPanel(state.detail);
+}
+
+function syncNotifyButton() {
+  $('#notify').setAttribute('aria-pressed', String(state.notify));
+  $('#notify').title = state.notify ? '状态提醒已开启' : '状态变化时提醒';
+}
+
+applyTheme(store.get('theme', null));
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', () => applyTheme(store.get('theme', null)));
+$('#theme').addEventListener('click', () => {
+  const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
+  store.set('theme', next);
+  applyTheme(next);
+  rerenderCharts();
+});
+$('#notify').addEventListener('click', async () => {
+  if (!('Notification' in window)) { showToast('当前浏览器不支持通知'); return; }
+  if (!state.notify && Notification.permission !== 'granted' && await Notification.requestPermission() !== 'granted') { showToast('浏览器没有允许通知'); return; }
+  state.notify = !state.notify;
+  store.set('notify', state.notify);
+  syncNotifyButton();
+  showToast(state.notify ? '会话等待、完成或失败时会提醒你' : '已关闭提醒');
+});
+$('#settings-btn').addEventListener('click', () => openSettingsDialog($('#settings-dialog'), apiFetch, () => refresh(true)));
+$('#sys-btn').addEventListener('click', () => renderSystemDialog($('#sys-dialog'), apiFetch, false));
+$('#d-report').addEventListener('click', () => $('#d-report .p-report').classList.toggle('expanded'));
+$('#panel-toggle').addEventListener('click', () => setPanel($('#app').classList.contains('panel-hidden')));
+$('#panel-close').addEventListener('click', () => setPanel(false));
+$('#side-collapse').addEventListener('click', () => setSide(false));
+$('#side-open').addEventListener('click', () => setSide(true));
+$('#scroller').addEventListener('scroll', syncJump);
+$('.main').addEventListener('pointerdown', event => {
+  const app = $('#app');
+  if (event.target.closest('.main-head')) return;
+  if (narrow() && !app.classList.contains('side-hidden')) { event.preventDefault(); setSide(false); }
+  else if (compact() && !app.classList.contains('panel-hidden')) { event.preventDefault(); setPanel(false); }
+});
+$('#jump').addEventListener('click', () => $('#scroller').scrollTo({ top: $('#scroller').scrollHeight, behavior: 'smooth' }));
+$('#pause').addEventListener('click', () => setPaused(!state.paused));
+$('#search').addEventListener('input', () => renderList(state, listHandlers));
+for (const button of document.querySelectorAll('[data-tab]')) {
+  button.addEventListener('click', () => { state.tab = button.dataset.tab; store.set('tab', state.tab); state.recordsKey = ''; renderRecords(); });
+}
+for (const button of document.querySelectorAll('[data-ptab]')) {
+  button.addEventListener('click', () => {
+    state.ptab = button.dataset.ptab;
+    store.set('ptab', state.ptab);
+    $('#panel-body').scrollTop = 0;
+    if (state.detail) renderPanel(state.detail);
+    else syncSeg($('#ptabs'), 'ptab', state.ptab);
+  });
+}
+for (const dlg of document.querySelectorAll('dialog.dialog')) {
+  dlg.addEventListener('click', event => { if (event.target === dlg || event.target.closest('[data-close]')) dlg.close(); });
+}
+document.addEventListener('pointerdown', event => { if (!$('#menu').hidden && !event.target.closest('#menu')) closeMenu(); });
+addEventListener('blur', closeMenu);
+$('#list').addEventListener('scroll', closeMenu);
+document.addEventListener('keydown', event => {
+  if (!$('#menu').hidden) {
+    const items = [...$('#menu').querySelectorAll(':scope > button:not(:disabled), :scope > .sub > button')];
+    const index = items.indexOf(document.activeElement);
+    if (event.key === 'Escape') { closeMenu(); return; }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); items[(index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length]?.focus(); return; }
     return;
   }
-  if (speedSource && speedAgentId === agent.id && speedSource.readyState !== EventSource.CLOSED) return;
-  if (speedSource) { speedSource.close(); speedSource = null; }
-  speedAgentId = agent.id;
-  state.liveSpeed = null;
-  speedSource = new EventSource(`/api/agents/${agent.id}/speed`);
-  speedSource.onmessage = event => {
-    try {
-      state.liveSpeed = JSON.parse(event.data);
-      if (state.tab === 'speed') renderSpeedPanel(dom.pSpeed, state.detail, state.liveSpeed, dom.tip);
-    } catch (error) {
-      state.liveSpeed = null;
-      console.error(error?.message || String(error));
-    }
-  };
-}
-
-async function selectAgent(id) {
-  state.selectedId = id;
-  if (window.innerWidth <= 760) dom.app.classList.remove('side-open');
-  syncSpeedStream();
-  await loadSelectedDetail(true);
-  renderAll();
-}
-
-async function applyListPayload(payload) {
-  state.agents = payload.agents || [];
-  state.groupNames = payload.groupNames || {};
-  state.errors = payload.errors || [];
-  notifyQuestions();
-  if (!state.selectedId && state.agents.length) state.selectedId = state.agents[0].id;
-  else if (state.selectedId && !state.agents.some(a => a.id === state.selectedId)) {
-    state.selectedId = state.agents[0]?.id || null;
+  if (document.querySelector('dialog[open]') || event.metaKey || event.ctrlKey || event.altKey) return;
+  const isInput = /^(INPUT|TEXTAREA|SELECT)$/.test(event.target.tagName);
+  if (event.key === 'Escape' && event.target.id === 'search') { event.target.value = ''; event.target.blur(); renderList(state, listHandlers); return; }
+  if (isInput) return;
+  if (event.key === '/') { event.preventDefault(); if (narrow()) setSide(true); $('#search').focus(); }
+  else if (event.key === 'j' || event.key === 'ArrowDown') { event.preventDefault(); moveSelection(1); }
+  else if (event.key === 'k' || event.key === 'ArrowUp') { event.preventDefault(); moveSelection(-1); }
+  else if (event.key === 'p') setPaused(!state.paused);
+  else if (event.key === '[') setSide($('#app').classList.contains('side-hidden'));
+  else if (event.key === ']') setPanel($('#app').classList.contains('panel-hidden'));
+  else if (event.key === ',') { event.preventDefault(); openSettingsDialog($('#settings-dialog'), apiFetch, () => refresh(true)); }
+  else if (event.key === '?') { event.preventDefault(); $('#help-dialog').showModal(); }
+  else if (event.key === 'ContextMenu' || (event.shiftKey && event.key === 'F10')) {
+    const a = state.agents.find(x => x.id === state.selected);
+    const node = document.querySelector('.row[aria-current="true"]');
+    if (a && node) { event.preventDefault(); const box = node.getBoundingClientRect(); agentMenu(a, box.left + 40, box.bottom, state, menuActions); }
   }
-  await loadSelectedDetail();
-  syncSpeedStream();
-  renderAll();
-}
-
-async function refreshNow() {
-  try {
-    const payload = await apiFetch('/api/agents');
-    await applyListPayload(payload);
-    if (eventsSource?.readyState === EventSource.OPEN) setConn('实时推送', 'live');
-    else setConn(state.paused ? '已暂停' : '轮询中', state.paused ? 'paused' : 'poll');
-  } catch (error) {
-    setConn('连接失败', 'err');
-    showToast(`刷新失败：${error.message}`);
-  }
-}
-
-function stopLiveStreams() {
-  if (eventsSource) { eventsSource.close(); eventsSource = null; }
-  if (speedSource) { speedSource.close(); speedSource = null; }
-  speedAgentId = null;
-  clearInterval(pollTimer);
-  pollTimer = null;
-}
-
-function startLiveStreams() {
-  stopLiveStreams();
-  if (state.paused) { setConn('已暂停', 'paused'); return; }
-  setConn('连接中', 'poll');
-  eventsSource = new EventSource('/api/events');
-  eventsSource.onopen = () => {
-    clearInterval(pollTimer);
-    pollTimer = null;
-    setConn('实时推送', 'live');
-  };
-  eventsSource.onmessage = event => {
-    try { applyListPayload(JSON.parse(event.data)); }
-    catch (error) {
-      setConn('解析异常', 'err');
-      console.error(error?.message || String(error));
-    }
-  };
-  eventsSource.onerror = () => {
-    setConn('轮询中', 'poll');
-    if (!pollTimer) pollTimer = setInterval(refreshNow, 2000);
-  };
-}
-
-function setupResizers() {
-  const savedSide = localStorage.getItem('pi_side_w');
-  const savedPanel = localStorage.getItem('pi_panel_w');
-  if (savedSide) dom.app.style.setProperty('--side-w', savedSide);
-  if (savedPanel) dom.app.style.setProperty('--panel-w', savedPanel);
-  for (const handle of document.querySelectorAll('[data-resize]')) {
-    const kind = handle.dataset.resize;
-    handle.addEventListener('pointerdown', event => {
-      event.preventDefault();
-      dom.app.classList.add('dragging');
-      handle.classList.add('active');
-      const onMove = move => {
-        if (kind === 'side') {
-          const w = `${Math.max(220, Math.min(440, move.clientX))}px`;
-          dom.app.style.setProperty('--side-w', w);
-          localStorage.setItem('pi_side_w', w);
-        } else {
-          const w = `${Math.max(280, Math.min(540, window.innerWidth - move.clientX))}px`;
-          dom.app.style.setProperty('--panel-w', w);
-          localStorage.setItem('pi_panel_w', w);
-        }
-      };
-      const onUp = () => {
-        dom.app.classList.remove('dragging');
-        handle.classList.remove('active');
-        window.removeEventListener('pointermove', onMove);
-        window.removeEventListener('pointerup', onUp);
-      };
-      window.addEventListener('pointermove', onMove);
-      window.addEventListener('pointerup', onUp);
-    });
-  }
-}
-
-function setupButtons() {
-  const savedTheme = localStorage.getItem('pi_dashboard_theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-  document.documentElement.dataset.theme = savedTheme;
-  dom.theme.textContent = savedTheme === 'dark' ? '浅色' : '深色';
-
-  dom.theme.addEventListener('click', () => {
-    const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark';
-    document.documentElement.dataset.theme = next;
-    localStorage.setItem('pi_dashboard_theme', next);
-    dom.theme.textContent = next === 'dark' ? '浅色' : '深色';
-  });
-
-  dom.pause.addEventListener('click', () => {
-    state.paused = !state.paused;
-    dom.pause.textContent = state.paused ? '继续' : '暂停';
-    if (state.paused) { stopLiveStreams(); setConn('已暂停', 'paused'); }
-    else startLiveStreams();
-  });
-
-  dom.notify.addEventListener('click', async () => {
-    if (!('Notification' in window)) return showToast('当前浏览器不支持桌面通知');
-    const perm = await Notification.requestPermission();
-    showToast(perm === 'granted' ? '已开启提问桌面通知' : '未获得通知权限');
-  });
-
-  dom.settingsBtn.addEventListener('click', () => openSettingsDialog(dom.settingsDialog, apiFetch, () => refreshNow()));
-  dom.sysBtn.addEventListener('click', () => renderSystemDialog(dom.sysDialog, apiFetch, false));
-  dom.helpBtn.addEventListener('click', () => dom.helpDialog.showModal());
-  dom.helpDialog.querySelector('[data-close]')?.addEventListener('click', () => dom.helpDialog.close());
-  for (const dlg of [dom.dialog, dom.sysDialog, dom.settingsDialog, dom.helpDialog]) {
-    dlg?.addEventListener('click', event => { if (event.target === dlg) dlg.close(); });
-  }
-  dom.sideToggle?.addEventListener('click', () => {
-    if (window.innerWidth <= 760) {
-      dom.app.classList.remove('panel-open');
-      dom.app.classList.toggle('side-open');
-    } else {
-      dom.app.classList.toggle('side-hidden');
-    }
-  });
-  dom.panelToggle?.addEventListener('click', () => {
-    if (window.innerWidth <= 1180) {
-      dom.app.classList.remove('side-open');
-      dom.app.classList.toggle('panel-open');
-    } else {
-      dom.app.classList.toggle('panel-hidden');
-    }
-  });
-
-  dom.search.addEventListener('input', () => { state.search = dom.search.value; renderSidebarList(dom, state, sidebarHandlers); });
-  dom.threadSearch.addEventListener('input', () => { state.threadSearch = dom.threadSearch.value; renderThread(dom.records, state.detail, state.threadSearch); });
-
-  for (const btn of dom.ptabs.querySelectorAll('button')) {
-    btn.addEventListener('click', () => { state.tab = btn.dataset.tab; renderActiveInspector(); });
-  }
-  document.addEventListener('click', event => {
-    if (!dom.menu.hidden && !dom.menu.contains(event.target)) dom.menu.hidden = true;
-    const t = event.target;
-    if (dom.app.classList.contains('side-open') && !t.closest('.side') && t !== dom.sideToggle) dom.app.classList.remove('side-open');
-    if (dom.app.classList.contains('panel-open') && !t.closest('.panel') && t !== dom.panelToggle) dom.app.classList.remove('panel-open');
-  });
-}
-
-function setupKeyboard() {
-  const tabs = ['status', 'speed', 'lane', 'context', 'changes'];
-  document.addEventListener('keydown', event => {
-    const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
-    if (event.key === 'Escape') {
-      dom.menu.hidden = true;
-      dom.app.classList.remove('side-open', 'panel-open');
-      if (typing && document.activeElement.value) {
-        document.activeElement.value = '';
-        document.activeElement.dispatchEvent(new Event('input'));
-      }
-      return;
-    }
-    const modalOpen = dom.dialog.open || dom.sysDialog.open || dom.settingsDialog.open || dom.helpDialog.open;
-    if (typing || modalOpen || event.metaKey || event.ctrlKey || event.altKey) return;
-    if (event.key === '/') { event.preventDefault(); dom.search.focus(); }
-    else if (event.key === ',') { event.preventDefault(); dom.settingsBtn.click(); }
-    else if (event.key === '?') { event.preventDefault(); dom.helpDialog.showModal(); }
-    else if (event.key === 'p') dom.pause.click();
-    else if (event.key === '[' || event.key === ']') {
-      const idx = tabs.indexOf(state.tab);
-      state.tab = tabs[(idx + (event.key === ']' ? 1 : tabs.length - 1)) % tabs.length];
-      renderActiveInspector();
-    } else if (event.key === 'j' || event.key === 'k') {
-      const list = visibleAgents(state);
-      if (!list.length) return;
-      const idx = list.findIndex(a => a.id === state.selectedId);
-      const nextIdx = idx === -1 ? 0 : Math.min(list.length - 1, Math.max(0, idx + (event.key === 'j' ? 1 : -1)));
-      selectAgent(list[nextIdx].id);
-    }
-  });
-}
-
-function setupControls() {
-  setupButtons();
-  setupKeyboard();
-}
-
-setupResizers();
-setupControls();
-refreshNow().then(() => startLiveStreams());
+});
+let resizeTimer;
+addEventListener('resize', () => {
+  applyLayout();
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { syncSeg($('#views'), 'tab', state.tab); syncSeg($('#ptabs'), 'ptab', state.ptab); }, 60);
+});
+new ResizeObserver(() => {
+  if (state.detail && !$('#app').classList.contains('dragging')) renderLane(state.detail.agent, pairTools(state.detail.agent.events));
+}).observe($('#lane-wrap'));
+window.addEventListener('hashchange', () => { history.replaceState(null, '', location.pathname); setPaused(false); });
+bindTips($('#lane-wrap'));
+bindResizers(() => {
+  if (state.detail) renderLane(state.detail.agent, pairTools(state.detail.agent.events));
+  syncSeg($('#views'), 'tab', state.tab);
+  syncSeg($('#ptabs'), 'ptab', state.ptab);
+});
+syncNotifyButton();
+applyLayout();
+requestAnimationFrame(() => { syncSeg($('#views'), 'tab', state.tab); syncSeg($('#ptabs'), 'ptab', state.ptab); });
+refresh(true).then(applyLayout);
+setInterval(tick, 1000);
+setInterval(() => { if (!state.paused && working.has(state.detail?.agent?.status)) refreshDetail().catch(error => showError(error.message)); }, 400);

@@ -1,27 +1,146 @@
-const svgNs = 'http://www.w3.org/2000/svg';
+export const $ = selector => document.querySelector(selector);
+const SVG = 'http://www.w3.org/2000/svg';
 
-export function el(tag, attrs = {}, ...children) {
+export const labels = {
+  starting: '正在启动',
+  running: '运行中',
+  waiting: '等待答复',
+  finishing: '正在结束',
+  idle: '空闲',
+  completed: '已完成',
+  failed: '失败',
+  interrupted: '已中断',
+  stopped: '已停止',
+  closed: '已关闭',
+  disconnected: '控制进程离线',
+};
+
+export const order = ['running', 'starting', 'finishing', 'waiting', 'idle', 'completed', 'interrupted', 'stopped', 'failed', 'disconnected', 'closed'];
+export const colors = {
+  running: '--run',
+  starting: '--run',
+  finishing: '--run',
+  waiting: '--wait',
+  idle: '--idle',
+  completed: '--done',
+  interrupted: '--idle',
+  stopped: '--idle',
+  failed: '--fail',
+  disconnected: '--off',
+  closed: '--closed',
+};
+
+export const working = new Set(['starting', 'running', 'waiting', 'finishing']);
+export const busyStatuses = new Set(['starting', 'running', 'finishing']);
+export const attention = new Set(['waiting', 'failed', 'disconnected']);
+
+export const filters = [
+  { key: 'all', title: '全部', match: () => true },
+  { key: 'working', title: '工作中', match: s => working.has(s) },
+  { key: 'waiting', title: '待答复', match: s => s === 'waiting' },
+  { key: 'completed', title: '已完成', match: s => s === 'completed' },
+  { key: 'problem', title: '异常', match: s => s === 'failed' || s === 'disconnected' },
+  { key: 'closed', title: '已关闭', match: s => s === 'closed' },
+];
+
+export const eventTypes = {
+  ready: '准备就绪',
+  started: '开始执行',
+  instruction: '收到任务',
+  message_consumed: '消息已读入',
+  question: '向父代理提问',
+  answer: '父代理答复',
+  message: '向父代理报告',
+  tool_execution_start: '开始工具',
+  tool_execution_end: '工具结束',
+  settled: '本次执行结束',
+  model_changed: '模型已更换',
+  model_restored: '原模型已恢复',
+  resumed: '会话已恢复',
+  interrupted: '执行已中断',
+  closed: '会话已关闭',
+  process_failed: '进程失败',
+  control_failed: '控制命令失败',
+  extension_error: '扩展失败',
+  question_cancelled: '问题已取消',
+  instruction_failed: '任务发送失败',
+  policy_changed: '策略已更新',
+  budget_limit: '达到用量上限',
+};
+
+export const commTypes = new Set(['instruction', 'message', 'question', 'answer', 'question_cancelled']);
+export const badTypes = new Set(['process_failed', 'control_failed', 'extension_error', 'instruction_failed', 'interrupted', 'budget_limit']);
+export const lifeTypes = new Set(['ready', 'started', 'settled', 'resumed', 'interrupted', 'closed', 'model_changed', 'model_restored', 'process_failed', 'control_failed', 'extension_error', 'instruction_failed', 'budget_limit']);
+export const notifyOn = { waiting: '在等待答复', failed: '执行失败', completed: '已完成', disconnected: '控制进程离线' };
+export const kindNames = { antigravity: 'AGY', claude: 'Claude', codex: 'Codex' };
+
+export const store = {
+  get(key, fallback) {
+    try {
+      const v = localStorage.getItem(`pi-dash:${key}`);
+      return v == null ? fallback : JSON.parse(v);
+    } catch {
+      return fallback;
+    }
+  },
+  set(key, value) {
+    try { localStorage.setItem(`pi-dash:${key}`, JSON.stringify(value)); }
+    catch {}
+  },
+};
+
+export function el(tag, props = {}, ...children) {
   const node = document.createElement(tag);
-  for (const [key, value] of Object.entries(attrs || {})) {
+  for (const [key, value] of Object.entries(props || {})) {
     if (value == null || value === false) continue;
-    if (key === 'className') node.className = value;
+    if (key === 'class' || key === 'className') node.className = value;
+    else if (key === 'text') node.textContent = value;
     else if (key === 'dataset') Object.assign(node.dataset, value);
     else if (key === 'style' && typeof value === 'object') Object.assign(node.style, value);
+    else if (key === 'checked') { node.checked = true; node.setAttribute('checked', ''); }
+    else if (key === 'value' && ('value' in node)) { node.value = String(value); node.setAttribute('value', String(value)); }
     else if (key.startsWith('on') && typeof value === 'function') node.addEventListener(key.slice(2).toLowerCase(), value);
-    else if (value === true) node.setAttribute(key, '');
-    else node.setAttribute(key, String(value));
+    else node.setAttribute(key, value === true ? '' : String(value));
   }
   for (const child of children.flat(Infinity)) {
     if (child == null || child === false) continue;
     node.append(child instanceof Node ? child : document.createTextNode(String(child)));
   }
   return node;
+}
+
+export function mount(parent, ...children) {
+  parent.replaceChildren(...children.flat(Infinity).filter(c => c != null && c !== false).map(c => c instanceof Node ? c : document.createTextNode(String(c))));
+}
+
+export function morph(parent, next) {
+  const old = [...parent.childNodes];
+  next.forEach((node, i) => old[i] ? patchNode(old[i], node) : parent.append(node));
+  for (const node of old.slice(next.length)) node.remove();
+}
+
+function patchNode(old, next) {
+  if (old.nodeType !== next.nodeType || old.nodeName !== next.nodeName || old.nodeName === 'BUTTON') {
+    old.replaceWith(next);
+    return;
+  }
+  if (next.nodeType !== 1) {
+    if (old.data !== next.data) old.data = next.data;
+    return;
+  }
+  for (const { name } of [...old.attributes]) {
+    if (!next.hasAttribute(name)) old.removeAttribute(name);
+  }
+  for (const { name, value } of [...next.attributes]) {
+    if (old.getAttribute(name) !== value) old.setAttribute(name, value);
+  }
+  morph(old, [...next.childNodes]);
 }
 
 export function svg(tag, attrs = {}, ...children) {
-  const node = document.createElementNS(svgNs, tag);
-  for (const [key, value] of Object.entries(attrs || {})) {
-    if (value != null && value !== false) node.setAttribute(key, String(value));
+  const node = document.createElementNS(SVG, tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (v != null && v !== false) node.setAttribute(k, String(v));
   }
   for (const child of children.flat(Infinity)) {
     if (child == null || child === false) continue;
@@ -30,63 +149,87 @@ export function svg(tag, attrs = {}, ...children) {
   return node;
 }
 
-export function morph(container, items, keyOf, createNode, updateNode) {
-  const existing = new Map();
-  for (const child of [...container.children]) {
-    if (child.dataset?.k) existing.set(child.dataset.k, child);
-  }
-  const desired = [];
-  for (const item of items) {
-    const key = String(keyOf(item));
-    let node = existing.get(key);
-    if (node) {
-      existing.delete(key);
-      if (updateNode) updateNode(node, item);
-    } else {
-      node = createNode(item);
-      node.dataset.k = key;
-    }
-    desired.push(node);
-  }
-  for (const leftover of existing.values()) leftover.remove();
-  desired.forEach((node, index) => {
-    const current = container.children[index];
-    if (current !== node) container.insertBefore(node, current || null);
-  });
+export function glyph(d, cls = '') {
+  const box = svg('svg', { viewBox: '0 0 24 24', class: cls, 'aria-hidden': 'true' });
+  for (const part of [d].flat()) if (part) box.append(svg('path', { d: part }));
+  return box;
 }
 
-export function clock(iso) {
-  if (!iso) return '-';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '-';
-  return d.toLocaleTimeString('zh-CN', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+export const paths = {
+  folder: 'M3.5 7.5a2 2 0 0 1 2-2h3.2l2 2h7.8a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2z',
+  more: 'M6 12h.01M12 12h.01M18 12h.01',
+  open: 'M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4',
+  copy: 'M9 9h10v11H9zM5 15V4h10',
+  check: 'M5 12.5l4.5 4.5L19 7',
+  close: 'M6 6l12 12M18 6 6 18',
+  undo: 'M9 14 4 9l5-5M4 9h10a6 6 0 0 1 0 12h-3',
+  move: 'M5 9l-3 3 3 3M9 5l3-3 3 3M15 19l-3 3-3-3M19 9l3 3-3 3M2 12h20M12 2v20',
+  plus: 'M12 5v14M5 12h14',
+  pen: 'M4 20h4L19 9l-4-4L4 16z',
+  fold: 'M7 10l5 5 5-5',
+  chevron: 'M9 6l6 6-6 6',
+  branch: 'M6 4v12M6 16a2 2 0 1 0 0 4 2 2 0 0 0 0-4zM18 8a2 2 0 1 0 0-4 2 2 0 0 0 0 4zM18 8c0 5-6 4-12 8',
+  commit: 'M12 9a3 3 0 1 0 0 6 3 3 0 0 0 0-6zM3 12h6M15 12h6',
+  pr: 'M6 4v16M6 4a2 2 0 1 0 0 .01M18 20a2 2 0 1 0 0-.01M18 18V9a3 3 0 0 0-3-3h-4M13 4l-2 2 2 2',
+  merge: 'M6 4v16M6 8c0 6 12 4 12 10M6 4a2 2 0 1 0 0 .01M18 20a2 2 0 1 0 0-.01',
+  refresh: 'M20 11a8 8 0 0 0-14.5-4.5L4 8M4 4v4h4M4 13a8 8 0 0 0 14.5 4.5L20 16M20 20v-4h-4',
+  repo: 'M5 4h12a2 2 0 0 1 2 2v14H7a2 2 0 0 1-2-2zM5 18a2 2 0 0 1 2-2h12',
+  empty: 'M4 7h16v13H4zM9 11h6M8 3h8l4 4H4z',
+};
+
+export const ms = value => value ? Date.parse(value) : NaN;
+export const clock = value => value ? new Date(value).toLocaleTimeString('zh-CN', { hour12: false }) : '—';
+export const fullDate = value => value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '—';
+export const modelName = agent => !agent?.model ? '未知模型' : typeof agent.model === 'string' ? agent.model.replace('/', ' / ') : `${agent.model.provider || '未知服务'} / ${agent.model.model || '未知模型'}`;
+
+export function duration(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return '—';
+  const s = Math.floor(milliseconds / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor(s % 3600 / 60);
+  const r = s % 60;
+  return h ? `${h}:${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}` : `${m}:${String(r).padStart(2, '0')}`;
 }
 
-export function fullDate(iso) {
-  if (!iso) return '-';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '-';
-  return d.toLocaleString('zh-CN', { hour12: false });
+export function shortDuration(milliseconds) {
+  if (!Number.isFinite(milliseconds)) return '—';
+  if (milliseconds < 1000) return `${Math.max(0, Math.round(milliseconds))}ms`;
+  if (milliseconds < 60000) return `${(milliseconds / 1000).toFixed(1)}s`;
+  return `${Math.floor(milliseconds / 60000)}m${Math.round(milliseconds % 60000 / 1000)}s`;
 }
 
-export function shortDuration(ms) {
-  if (!Number.isFinite(ms) || ms < 0) return '-';
-  if (ms < 1000) return `${Math.round(ms)}ms`;
-  const s = ms / 1000;
-  if (s < 60) return `${s.toFixed(1)}s`;
+export function longDuration(milliseconds) {
+  if (!Number.isFinite(milliseconds) || milliseconds < 0) return '';
+  const s = Math.round(milliseconds / 1000);
+  if (s < 60) return `${s}秒`;
   const m = Math.floor(s / 60);
-  const rem = Math.round(s % 60);
-  if (m < 60) return `${m}m${rem}s`;
-  const h = Math.floor(m / 60);
-  return `${h}h${m % 60}m`;
+  if (m < 60) return `${m}分${s % 60 ? `${s % 60}秒` : ''}`;
+  return `${Math.floor(m / 60)}小时${m % 60 ? `${m % 60}分` : ''}`;
 }
 
-export function compactNumber(value) {
-  if (!Number.isFinite(value)) return '0';
-  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
-  if (value >= 10_000) return `${(value / 1_000).toFixed(1)}k`;
-  if (value >= 1_000) return `${(value / 1_000).toFixed(2)}k`;
-  return String(Math.round(value));
+export function ago(value) {
+  const diff = Date.now() - ms(value);
+  if (!Number.isFinite(diff)) return '—';
+  if (diff < 10000) return '刚刚';
+  if (diff < 60000) return `${Math.floor(diff / 1000)} 秒`;
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时`;
+  return new Date(value).toLocaleDateString('zh-CN', { month: 'numeric', day: 'numeric' });
+}
+
+export function tokens(n = 0) {
+  if (!Number.isFinite(n)) return '0';
+  return n >= 1e6 ? `${(n / 1e6).toFixed(2)}M` : n >= 1e3 ? `${(n / 1e3).toFixed(1)}k` : String(Math.round(n));
+}
+
+export const compactNumber = tokens;
+export const cost = n => n ? `$${n < 1 ? n.toFixed(3) : n.toFixed(2)}` : '$0';
+export const statusLabel = status => labels[status] || status || '未知';
+export const isWorking = status => busyStatuses.has(status);
+
+export function elapsedOf(agent) {
+  const end = working.has(agent.status) ? Date.now() : ms(agent.activity?.lastWorkAt || agent.updatedAt);
+  return end - ms(agent.createdAt);
 }
 
 export function safeHref(raw) {
@@ -99,74 +242,46 @@ export function safeHref(raw) {
   }
 }
 
-export const isWorking = status => ['starting', 'running', 'finishing'].includes(status);
-
-export function totalUsageTokens(usage) {
-  if (!usage) return 0;
-  return (usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
-}
-
 export function agentSessionId(agent) {
   return agent?.parentInfo?.sessionId || agent?.callback?.antigravitySessionId || agent?.callback?.claudeSessionId || agent?.callback?.codexThreadId || null;
 }
 
-const statusLabels = {
-  starting: '启动中',
-  running: '运行中',
-  waiting: '等待答复',
-  finishing: '收尾中',
-  idle: '空闲',
-  completed: '已完成',
-  failed: '已失败',
-  closed: '已关闭',
-  stopped: '已停止',
-  interrupted: '已中断',
-  disconnected: '控制断开',
-};
-
-export const statusLabel = status => statusLabels[status] || status || '未知';
-
-export function statusGroup(status) {
-  if (isWorking(status)) return 'working';
-  if (status === 'waiting') return 'waiting';
-  if (['completed', 'closed', 'idle', 'stopped', 'interrupted'].includes(status)) return 'done';
-  if (['failed', 'disconnected'].includes(status)) return 'issue';
-  return 'other';
-}
-
 export function agentHost(agent) {
-  const kind = (agent.parentInfo?.kind || agent.callback?.host || '').toLowerCase();
-  if (kind.includes('antigravity') || agent.callback?.antigravitySessionId) return 'antigravity';
-  if (kind.includes('claude') || agent.callback?.claudeSessionId) return 'claude';
-  if (kind.includes('codex') || agent.callback?.codexThreadId) return 'codex';
+  const kind = (agent?.parentInfo?.kind || agent?.callback?.host || '').toLowerCase();
+  if (kind.includes('antigravity') || agent?.callback?.antigravitySessionId) return 'antigravity';
+  if (kind.includes('claude') || agent?.callback?.claudeSessionId) return 'claude';
+  if (kind.includes('codex') || agent?.callback?.codexThreadId) return 'codex';
   return 'other';
 }
 
 export function hostMeta(host) {
   if (host === 'antigravity') return { id: 'antigravity', label: 'Antigravity', short: 'AGY', cls: 'host-agy' };
-  if (host === 'claude') return { id: 'claude', label: 'Claude Code', short: 'Claude', cls: 'host-claude' };
+  if (host === 'claude') return { id: 'claude', label: 'Claude', short: 'Claude', cls: 'host-claude' };
   if (host === 'codex') return { id: 'codex', label: 'Codex', short: 'Codex', cls: 'host-codex' };
-  return { id: 'other', label: '其他会话', short: '本地', cls: 'host-other' };
+  return { id: 'other', label: '会话', short: '', cls: 'host-other' };
 }
 
 let toastTimer = null;
-export function showToast(message) {
-  const node = document.getElementById('toast');
-  if (!node) return;
-  node.textContent = message;
-  node.classList.add('show');
+export function showToast(text) {
+  const t = $('#toast');
+  if (!t) return;
+  t.textContent = text;
+  t.hidden = false;
+  t.style.animation = 'none';
+  void t.offsetWidth;
+  t.style.animation = '';
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => node.classList.remove('show'), 2200);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 2100);
 }
 
-export async function copyText(text, label = '已复制') {
+export async function copyText(text, message = '已复制') {
   if (!text) return false;
   try {
     await navigator.clipboard.writeText(String(text));
-    showToast(`${label}：${String(text).slice(0, 36)}${String(text).length > 36 ? '…' : ''}`);
+    showToast(message);
     return true;
-  } catch (error) {
-    showToast(`剪贴板写入被浏览器拒绝${error?.name ? ` (${error.name})` : ''}`);
+  } catch {
+    showToast('复制失败，请手动选择');
     return false;
   }
 }
@@ -181,10 +296,11 @@ export async function apiFetch(url, options = {}, retried = false) {
     headers.set('content-type', 'application/json');
     headers.set('x-pi-dashboard', '1');
   }
-  const res = await fetch(url, { credentials: 'same-origin', ...options, headers });
+  const signal = options.signal || AbortSignal.timeout(options.method === 'POST' ? 10000 : 15000);
+  const res = await fetch(url, { credentials: 'same-origin', ...options, headers, signal });
   if (res.status === 401 && !retried) {
-    await fetch('/', { credentials: 'same-origin' });
-    return apiFetch(url, options, true);
+    const boot = await fetch('/', { credentials: 'same-origin', cache: 'no-store', signal: AbortSignal.timeout(8000) });
+    if (boot.ok) return apiFetch(url, options, true);
   }
   const raw = await res.text();
   let json = {};
@@ -195,6 +311,60 @@ export async function apiFetch(url, options = {}, retried = false) {
       throw new Error(`接口返回无效 JSON: ${parseError.message}`);
     }
   }
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  if (!res.ok) throw new Error(json.error || `读取失败：${res.status}`);
   return json;
+}
+
+export function syncSeg(nav, attr, value) {
+  if (!nav) return;
+  const buttons = [...nav.querySelectorAll(`[data-${attr}]`)];
+  const current = buttons.find(b => b.dataset[attr] === value) || buttons[0];
+  for (const b of buttons) b.setAttribute('aria-selected', String(b === current));
+  const thumb = nav.querySelector('.seg-thumb');
+  if (!thumb || !current || !current.offsetWidth) return;
+  thumb.style.width = `${current.offsetWidth}px`;
+  thumb.style.transform = `translateX(${current.offsetLeft}px)`;
+}
+
+export function bindResizers(onDone) {
+  const app = $('#app');
+  const limits = { side: [220, 460, 280], panel: [300, 620, 360] };
+  const setWidth = (which, value) => {
+    const [min, max] = limits[which];
+    const w = Math.round(Math.min(max, Math.max(min, value)));
+    app.style.setProperty(`--${which}-w`, `${w}px`);
+    store.set(`${which}-w`, w);
+    return w;
+  };
+  for (const which of ['side', 'panel']) {
+    const saved = store.get(`${which}-w`, null);
+    if (saved) setWidth(which, saved);
+  }
+  for (const handle of document.querySelectorAll('.resizer')) {
+    const which = handle.dataset.resize;
+    handle.addEventListener('pointerdown', event => {
+      event.preventDefault();
+      handle.setPointerCapture(event.pointerId);
+      handle.classList.add('active');
+      app.classList.add('dragging');
+      const move = e => setWidth(which, which === 'side' ? e.clientX : innerWidth - e.clientX);
+      const up = () => {
+        handle.classList.remove('active');
+        app.classList.remove('dragging');
+        handle.removeEventListener('pointermove', move);
+        if (onDone) onDone();
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up, { once: true });
+      handle.addEventListener('pointercancel', up, { once: true });
+    });
+    handle.addEventListener('dblclick', () => { app.style.removeProperty(`--${which}-w`); store.set(`${which}-w`, null); if (onDone) onDone(); });
+    handle.addEventListener('keydown', event => {
+      if (!['ArrowLeft', 'ArrowRight'].includes(event.key)) return;
+      event.preventDefault();
+      const current = parseInt(getComputedStyle(app).getPropertyValue(`--${which}-w`), 10) || limits[which][2];
+      setWidth(which, current + (event.key === 'ArrowRight' ? 16 : -16) * (which === 'side' ? 1 : -1));
+      if (onDone) onDone();
+    });
+  }
 }

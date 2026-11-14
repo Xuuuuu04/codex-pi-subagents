@@ -42,7 +42,9 @@ function saveBaseUrlBtn(p, urlInput, state, postAction) {
 function renderProviderRows(target, ctx) {
   const { state, render } = ctx;
   const q = state.providerQuery.trim().toLowerCase();
-  const list = (state.payload?.providers || []).filter(p => !q || p.provider.toLowerCase().includes(q));
+  const list = (state.payload?.providers || [])
+    .filter(p => !q || p.provider.toLowerCase().includes(q))
+    .sort((a, b) => Number(b.enabled) - Number(a.enabled));
   if (!list.length) {
     target.replaceChildren(el('div', { className: 'empty-mini' }, '没有匹配的服务商'));
     return;
@@ -236,9 +238,9 @@ function renderModelCard(m, p, ctx) {
 
 function renderModelList(target, p, ctx) {
   const q = ctx.state.modelQuery.trim().toLowerCase();
-  const list = (ctx.state.payload?.models || []).filter(m =>
-    m.provider === p.provider && (!q || `${m.model} ${m.name || ''} ${m.description || ''}`.toLowerCase().includes(q)),
-  );
+  const list = (ctx.state.payload?.models || [])
+    .filter(m => m.provider === p.provider && (!q || `${m.model} ${m.name || ''} ${m.description || ''}`.toLowerCase().includes(q)))
+    .sort((a, b) => Number(b.modelEnabled !== false) - Number(a.modelEnabled !== false));
   if (!list.length) {
     target.replaceChildren(el('div', { className: 'empty-mini' }, p.totalModelsCount ? '没有匹配的模型' : '当前服务商暂无可用模型目录（可点右上角“刷新目录”）'));
     return;
