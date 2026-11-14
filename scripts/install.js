@@ -81,7 +81,7 @@ When delegating tasks to external models through \`pi-subagents\`, follow these 
 
 1. Handle the majority of coding, research, and execution tasks directly yourself unless delegation clearly adds value (major decisions, independent review, or user-requested subagent runs).
 2. Before spawning, check enabled models, context windows, capability descriptions, and Pi subagent tools via \`get_model_profiles\` or \`list_models\` (and \`get_subagent_health\` / \`get_quota\` if needed): prefer \`openai-codex/gpt-6-astra\` as a strict conservative brake on research and major architectural decisions (use thoughtfully due to tighter quota), and \`openai-codex/gpt-6.1-sol\` for lower-cost code review, debugging, or math/logic verification while explicitly instructing it to avoid defensive fallback code and redundant docs.
-3. Always bind the subagent to the current Antigravity session by passing \`antigravitySessionId\` (your Conversation ID) to \`spawn_agent\` / \`resume_agent\`, or call \`bind_session\`.
+3. Always bind the subagent to the current Antigravity session by passing \`antigravitySessionId\` (your Conversation ID) to \`spawn_agent\` / \`resume_agent\`, or call \`bind_session\`. Do not set custom \`policy\` caps (\`maxTotalTokens\`, \`maxModelRequests\`, \`maxRuntimeMs\`) unless the user explicitly asks for them; rely on the built-in generous defaults.
 4. Never treat \`spawn_agent\` acceptance as completion. Wait synchronously with \`wait_agent\` (forwarding \`nextSequence\` into \`after[agentId]\`) or start the background watcher returned in \`mustWait.antigravityBackgroundCommand\` (\`node ".../scripts/wait-events.js" --session <Conversation ID>\` via \`run_command\` with \`WaitMsBeforeAsync: 500\`, \`IsDaemon: false\`).
 5. Answer pending \`ask_parent\` questions immediately via \`reply_question\`.
 6. Filter children with \`list_agents(sessionId="<Conversation ID>")\` and inspect actual edits with \`get_agent_changes\` before reporting results.
@@ -102,7 +102,7 @@ Handle routine coding and exploration directly as the main agent; invoke \`pi-su
 2. Match the configured GPT models intentionally:
    - \`openai-codex/gpt-6-astra\`: rigorous, conservative, sometimes stubborn; use on research trade-offs or critical architectural decisions as a second-opinion brake when main-agent judgment may be overly optimistic (use selectively due to tighter quota).
    - \`openai-codex/gpt-6.1-sol\`: high-efficiency, cost-effective, strong math/logic precision for code review, bug hunting, and verification; explicitly constrain it in \`prompt\` not to add defensive fallbacks or extra documentation/comments.
-3. Call \`spawn_agent\` with \`antigravitySessionId\` set to your current Conversation ID, an explicit \`provider\` and \`model\`, absolute \`cwd\`, non-overlapping \`ownedPaths\`, and clear acceptance criteria.
+3. Call \`spawn_agent\` with \`antigravitySessionId\` set to your current Conversation ID, an explicit \`provider\` and \`model\`, absolute \`cwd\`, non-overlapping \`ownedPaths\`, and clear acceptance criteria. Omit \`policy.maxTotalTokens\`, \`policy.maxModelRequests\`, and \`policy.maxRuntimeMs\` unless the user explicitly requested a hard cap.
 4. For work spawned before binding or after reconnect, call \`bind_session({ sessionId: "<Conversation ID>" })\` and isolate inspection with \`list_agents({ sessionId: "<Conversation ID>" })\`.
 
 ## Waiting & Wake-Up

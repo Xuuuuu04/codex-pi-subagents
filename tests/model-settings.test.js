@@ -370,4 +370,23 @@ test('sync_codex imports OAuth tokens at 0o600, validates before writing and pre
   assert.match(astra.description, /刹车/);
   assert.match(sol.description, /防御性编程/);
   assert.match(og.description, /OpenCode Go/);
+
+  fs.writeFileSync(path.join(agentDir, 'models.json'), JSON.stringify({
+    providers: {
+      'openai-codex': { models: [{ id: 'gpt-6-astra', contextWindow: 512000, maxTokens: 128000 }] },
+    },
+  }));
+  saveModelSettings(stateRoot, {
+    models: {
+      'openai-codex/gpt-6-astra': { contextWindow: 1000000 },
+      'openai-codex/gpt-6.1-sol': { contextWindow: 1000000 },
+    },
+  }, { agentDir, backupDir });
+  const piUpdated = JSON.parse(fs.readFileSync(path.join(agentDir, 'models.json'), 'utf8'));
+  assert.equal(piUpdated.providers['openai-codex'].models[0].contextWindow, 1000000);
+  assert.equal(piUpdated.providers['openai-codex'].modelOverrides['gpt-6.1-sol'].contextWindow, 1000000);
+  const full1M = enrichModels([
+    { provider: 'openai-codex', model: 'gpt-6-astra', contextWindow: 1000000, maxTokens: 128000, reasoning: true, input: ['text'] },
+  ], stateRoot);
+  assert.match(full1M[0].description, /1M 上下文/);
 });

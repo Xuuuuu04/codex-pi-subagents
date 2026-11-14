@@ -185,6 +185,7 @@ export class Manager extends EventEmitter {
     agent.live?.close(); agent.live = new LiveStream(path.join(this.storage.directory(r.id), 'live.json'));
     agent.rpc.on('event', event => { agent.live.handle(event); this.onPiEvent(agent, event); });
     agent.rpc.on('stopped', error => {
+      clearTimeout(agent.runtimeTimer);
       agent.live.close();
       if (agent.closing) return;
       r.status = 'failed'; r.error = r.limitReason || error.message;
@@ -236,8 +237,9 @@ export class Manager extends EventEmitter {
         agent.record.runStartedAt = Date.now();
         clearTimeout(agent.runtimeTimer);
         agent.runtimeTimer = setTimeout(() => {
+          if (!agent.rpc || agent.rpc.exited || !activeStatuses.has(agent.record.status)) return;
           agent.record.limitReason = 'Maximum running time reached'; this.event(agent, 'budget_limit', { reason: agent.record.limitReason });
-          this.serial(agent, async () => { const rpc = agent.rpc; try { await rpc.command('abort'); } finally { await rpc.close(); } }).catch(error => this.emit('controller_error', error));
+          this.serial(agent, async () => { const rpc = agent.rpc; if (!rpc || rpc.exited) return; try { await rpc.command('abort'); } finally { await rpc.close(); } }).catch(error => this.emit('controller_error', error));
         }, agent.record.policy.maxRuntimeMs); agent.runtimeTimer.unref();
         agent.record.status = 'running'; agent.record.error = undefined; agent.record.stopReason = undefined;
       }

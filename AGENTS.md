@@ -56,7 +56,7 @@ Codex 调用 MCP → 私密 Unix socket → 独立管理器创建或控制 Pi �
 - 消息接受、进入模型上下文、主会话确认已读和业务完成是不同状态。
 - 新会话只加载两个指定扩展；权限扩展没有确认启动时不得发送任务。
 - 面板不调用代理控制命令，不停止或接手任何代理；会话显示整理与 MCP `organize_agents` 共写 `dashboard-marks.json`（自定义标题、备注、置顶、归档、已结束/已关闭、移动分组、分组改名），正在工作或等待答复的会话不能标记状态或归档，且产生新活动时自动解除归档；配置管理仅通过 `/api/settings*` 更新模型启用状态、上下文与能力描述、默认策略，以及经用户确认的 Pi 服务商 Key、Base URL 或本机 Codex OAuth 导入（写 `auth.json` 和 `models.json` 前先以 0600 备份，接口按字段白名单校验且仅返回脱敏状态，禁止向浏览器或 MCP 工具暴露明文 Key 或 OAuth token）。缺少活跃控制进程的工作状态明确显示离线。
-- `list_models` 与 `get_model_profiles` 返回含上下文窗口与能力描述的目录（默认隐藏已禁用项），`spawn_agent` 拒绝已禁用模型或服务商并将设置中的默认 `thinking`、`allowNetwork`、`sandboxMode`、`loadSkills` 与 `loadContextFiles` 固化进会话记录；刷新目录时保留原始 `baseContextWindow`/`baseMaxTokens` 恢复基线。
+- `list_models` 与 `get_model_profiles` 返回含上下文窗口与能力描述的目录（默认隐藏已禁用项），`spawn_agent` 拒绝已禁用模型或服务商并将设置中的默认 `thinking`、`allowNetwork`、`sandboxMode`、`loadSkills` 与 `loadContextFiles` 固化进会话记录；刷新目录时保留原始 `baseContextWindow`/`baseMaxTokens` 恢复基线。`policy.maxTotalTokens` 只累计非缓存读取用量（`input + output + cacheWrite`，不重复计入每轮重读的 `cacheRead`），主会话未获用户明确要求时不应自行收紧请求数、Token 或时长上限。
 - 面板左侧先按父会话分组：创建代理时桥接进程自报客户端类型、会话编号（Codex 的 `CODEX_THREAD_ID`、Claude Code 的 `CLAUDE_CODE_SESSION_ID`、Antigravity 的 `ANTIGRAVITY_CONVERSATION_ID` 或显式 `antigravitySessionId`）和所在目录，记在代理记录的 `parentInfo`；旧代理没有这项，面板按 `parentId` 分开并用工作目录推断。
 - Antigravity 会话通过 `spawn_agent.antigravitySessionId` 或 `bind_session` 关联；回调、插件钩子（`PreInvocation`、`Stop`）、`wait-events --session`、`read_agent` 和 `wait_agent` 共用 `antigravityDeliveredSeq` 去重，且仅按子集过滤 `--events` 时不会跳过未投递的默认回调事件。
 

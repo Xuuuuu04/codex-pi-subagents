@@ -164,16 +164,22 @@ function validateModelOverride(entry) {
 function syncPiModelsJson(modelsUpdates, catalog, { agentDir, backupDir, stateRoot }) {
   const piDir = resolvePiAgentDir(agentDir);
   const modelsFile = path.join(piDir, 'models.json');
-  const piModels = readJsonStrictIfExists(modelsFile, 'Pi models.json');
-  if (!piModels?.providers || typeof piModels.providers !== 'object') return;
+  const existing = readJsonStrictIfExists(modelsFile, 'Pi models.json');
+  const authMap = readMaskedAuthMap(piDir);
+  if (!existing && !Object.keys(authMap).length && !catalog.length) return;
+  const piModels = existing
+    ? { ...existing, providers: existing.providers && typeof existing.providers === 'object' ? { ...existing.providers } : {} }
+    : { providers: {} };
   let dirty = false;
   for (const [key, patch] of Object.entries(modelsUpdates)) {
     if (patch.contextWindow === undefined && patch.maxTokens === undefined) continue;
     const { provider, modelId } = parseModelKey(key);
-    if (!Object.hasOwn(piModels.providers, provider)) continue;
+    const catalogItem = catalog.find(item => item.provider === provider && (item.model || item.id) === modelId);
+    const hasProvider = Object.hasOwn(piModels.providers, provider);
+    if (!hasProvider && ((!Object.hasOwn(authMap, provider) && !catalogItem) || (patch.contextWindow === null && patch.maxTokens === null))) continue;
+    if (!hasProvider) piModels.providers[provider] = {};
     const pConfig = piModels.providers[provider];
     if (!pConfig || typeof pConfig !== 'object') continue;
-    const catalogItem = catalog.find(item => item.provider === provider && (item.model || item.id) === modelId);
     const listEntry = Array.isArray(pConfig.models) ? pConfig.models.find(item => item.id === modelId) : null;
     if (listEntry) {
       if (patch.contextWindow !== undefined) {
@@ -184,7 +190,7 @@ function syncPiModelsJson(modelsUpdates, catalog, { agentDir, backupDir, stateRo
         const nextVal = patch.maxTokens === null ? catalogItem?.baseMaxTokens : patch.maxTokens;
         if (Number.isInteger(nextVal) && listEntry.maxTokens !== nextVal) { listEntry.maxTokens = nextVal; dirty = true; }
       }
-    } else if (pConfig.modelOverrides || !Array.isArray(pConfig.models)) {
+    } else {
       pConfig.modelOverrides ||= {};
       const prev = Object.hasOwn(pConfig.modelOverrides, modelId) ? pConfig.modelOverrides[modelId] : null;
       const ov = { ...(prev || {}) };
@@ -195,11 +201,13 @@ function syncPiModelsJson(modelsUpdates, catalog, { agentDir, backupDir, stateRo
       if (JSON.stringify(prev || null) !== JSON.stringify(Object.keys(ov).length ? ov : null)) {
         if (Object.keys(ov).length) pConfig.modelOverrides[modelId] = ov;
         else delete pConfig.modelOverrides[modelId];
+        if (!hasProvider && !Object.keys(pConfig.modelOverrides).length) delete piModels.providers[provider];
         dirty = true;
       }
     }
   }
   if (!dirty) return;
+  fs.mkdirSync(piDir, { recursive: true, mode: 0o700 });
   backupFile(modelsFile, backupDir || defaultBackupDir(stateRoot, piDir), 'models');
   atomicWriteJson(modelsFile, piModels, { pretty: true });
   fs.chmodSync(modelsFile, 0o600);

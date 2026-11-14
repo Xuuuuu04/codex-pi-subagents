@@ -22,14 +22,13 @@ export function reserveRequest(agent, requestId, store) {
   }
   let reason;
   try { assertModelAllowed(r.policy, r.model); } catch (error) { reason = error.message; }
-  const tokens = ['input', 'output', 'cacheRead', 'cacheWrite'].reduce((sum, key) => sum + (r.usage[key] || 0), 0);
+  const tokens = ['input', 'output', 'cacheWrite'].reduce((sum, key) => sum + (r.usage[key] || 0), 0);
   if (r.modelRequests >= r.policy.maxModelRequests) reason = 'Maximum provider request count reached';
   if (tokens >= r.policy.maxTotalTokens) reason = 'Observed token limit reached';
   if (Date.now() - r.runStartedAt >= r.policy.maxRuntimeMs) reason = 'Maximum running time reached';
   if (reason) { store.update(r.id, requestId, { state: 'denied', reason }); r.limitReason = reason; throw new Error(reason); }
   r.modelRequests = (r.modelRequests || 0) + 1;
   store.update(r.id, requestId, { state: 'reserved' });
-  // 用量到 80% 时提醒一次，让代理先交出已有进展，避免额度耗尽后什么都没留下。
   const warning = !r.budgetWarned && tokens >= r.policy.maxTotalTokens * 0.8
     ? `[系统提醒] 本代理的 token 用量已达上限的 80%（${tokens}/${r.policy.maxTotalTokens}）。请立刻用 agent_message 汇报已有进展和改动，再继续收尾。` : undefined;
   if (warning) r.budgetWarned = true;

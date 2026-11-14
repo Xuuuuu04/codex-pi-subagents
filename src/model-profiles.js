@@ -10,96 +10,101 @@ export const PI_TOOLS_MANIFEST = [
   { name: 'ask_parent', label: '阻塞提问与等待', scope: '父会话人工或代理答复', description: '遇到需求歧义或关键决策时暂停等待，通过 reply_question 获取明确答复后继续。' },
 ];
 
+function formatContextLabel(value, fallback = '标准上下文') {
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  return value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1).replace(/\.0$/, '')}M 上下文` : `${Math.round(value / 1000)}K 上下文`;
+}
+
 const MODEL_FAMILY_RULES = [
   {
     match: (p, m) => p === 'openai-codex' && /^gpt-6-astra/.test(m),
     thinking: 'xhigh',
-    description: m => `非常严谨、逻辑坚持且偏保守的高阶决策模型${m.endsWith('-fast') ? '（Fast 优先通道）' : ''}（配额相对有限）。容易保守或陷入局部最优，但在科研分析、重大架构取舍与核心决策时可有效弥补过度乐观判断、充当严谨“刹车”并提供多角度审视。`,
+    description: (m, meta) => `非常严谨、逻辑坚持且偏保守的高阶决策模型${m.endsWith('-fast') ? '（Fast 优先通道）' : ''}（${formatContextLabel(meta?.contextWindow)}，配额相对有限）。容易保守或陷入局部最优，但在科研分析、重大架构取舍与核心决策时可有效弥补过度乐观判断、充当严谨“刹车”并提供多角度审视。`,
   },
   {
     match: (p, m) => p === 'openai-codex' && /^gpt-6(\.1)?-sol/.test(m),
     thinking: 'high',
-    description: m => `高效率、成本较低的精确编码模型${m.endsWith('-fast') ? '（Fast 通道）' : ''}，数学与逻辑推理准确度强；适合辅助编码 review、debug 排查与逻辑核验。典型问题是喜欢防御性编程、残留多余兜底和无用文档，派活时须明确约束禁止防御性兜底与多余文档（常规任务仍优先由主代理直接完成）。`,
+    description: (m, meta) => `高效率、成本较低的精确编码模型${m.endsWith('-fast') ? '（Fast 通道）' : ''}（${formatContextLabel(meta?.contextWindow)}），数学与逻辑推理准确度强；适合辅助编码 review、debug 排查与逻辑核验。典型问题是喜欢防御性编程、残留多余兜底和无用文档，派活时须明确约束禁止防御性兜底与多余文档（常规任务仍优先由主代理直接完成）。`,
   },
   {
     match: (p, m) => p === 'openai-codex' && /^gpt-(5\.6|6\.1)-terra/.test(m),
     thinking: 'medium',
-    description: () => '稳健工程实现模型，适合多文件功能改造、接口联调与常规缺陷修复；推理深度与性价比介于 Sol 与 Luna 之间。',
+    description: (m, meta) => `稳健工程实现模型（${formatContextLabel(meta?.contextWindow)}），适合多文件功能改造、接口联调与常规缺陷修复；推理深度与性价比介于 Sol 与 Luna 之间。`,
   },
   {
     match: (p, m) => p === 'openai-codex' && /^gpt-(5\.6|6)-luna/.test(m),
     thinking: 'low',
-    description: m => `轻量高速低成本 GPT 模型${m.endsWith('-fast') ? '（Fast 极速档）' : ''}，适合大范围代码检索、摘要、结构化整理与高频轻量回调验证。`,
+    description: (m, meta) => `轻量高速低成本 GPT 模型${m.endsWith('-fast') ? '（Fast 极速档）' : ''}（${formatContextLabel(meta?.contextWindow)}），适合大范围代码检索、摘要、结构化整理与高频轻量回调验证。`,
   },
   {
     match: (p, m) => p === 'openai-codex' && /^gpt-5\.3-codex-spark/.test(m),
     thinking: 'low',
-    description: () => '纯文本高速代码编辑模型，不支持图片输入；适合单文件快速改动、测试补全和机械重构。',
+    description: (m, meta) => `纯文本高速代码编辑模型（${formatContextLabel(meta?.contextWindow)}），不支持图片输入；适合单文件快速改动、测试补全和机械重构。`,
   },
   {
     match: p => p === 'openai-codex',
     thinking: 'medium',
-    description: () => '通用 GPT Codex 多模态编码模型，支持文本与图片输入，可胜任常规全栈开发与脚本验证。',
+    description: (m, meta) => `通用 GPT Codex 多模态编码模型（${formatContextLabel(meta?.contextWindow)}），支持文本与图片输入，可胜任常规全栈开发与脚本验证。`,
   },
   {
     match: (p, m) => (p === 'zhipu' || p === 'zai') && /highspeed/.test(m),
     thinking: 'medium',
-    description: () => '智谱高速并行编码档位，响应速度快，适合中文需求迭代、快速多路验证与页面交互修改。',
+    description: (m, meta) => `智谱高速并行编码档位（${formatContextLabel(meta?.contextWindow, '512K 上下文')}），响应速度快，适合中文需求迭代、快速多路验证与页面交互修改。`,
   },
   {
     match: (p, m) => (p === 'zhipu' || p === 'zai') && /(flash|turbo|4\.7)/.test(m),
     thinking: 'low',
-    description: () => '智谱轻量低成本模型，适合快速分类、文档整理、前端小改及并发巡查任务；复杂跨模块设计建议换用 GLM-5.3。',
+    description: (m, meta) => `智谱轻量低成本模型（${formatContextLabel(meta?.contextWindow, '512K 上下文')}），适合快速分类、文档整理、前端小改及并发巡查任务；复杂跨模块设计建议换用 GLM-5.3。`,
   },
   {
     match: p => p === 'zhipu' || p === 'zai',
     thinking: 'high',
-    description: () => '智谱主力中文编码与工具调用模型，512K 上下文，适合中文需求理解、前后端业务开发与多轮交互。',
+    description: (m, meta) => `智谱主力中文编码与工具调用模型，${formatContextLabel(meta?.contextWindow, '512K 上下文')}，适合中文需求理解、前后端业务开发与多轮交互。`,
   },
   {
     match: p => p.startsWith('opencode-go'),
     thinking: 'medium',
-    description: (m, meta) => `OpenCode Go 通道模型（${Math.round((meta?.contextWindow || 200000) / 1000)}K 上下文），需保证账号下已有有效 OpenCode Go 订阅后使用。`,
+    description: (m, meta) => `OpenCode Go 通道模型（${formatContextLabel(meta?.contextWindow, '200K 上下文')}），需保证账号下已有有效 OpenCode Go 订阅后使用。`,
   },
   {
     match: (p, m) => p === 'deepseek' && /pro/.test(m),
     thinking: 'high',
-    description: () => 'DeepSeek 1M 超长上下文深度推理模型（纯文本），擅长复杂算法、系统排错与大规模仓库全局分析。',
+    description: (m, meta) => `DeepSeek ${formatContextLabel(meta?.contextWindow, '1M 上下文')}深度推理模型（纯文本），擅长复杂算法、系统排错与大规模仓库全局分析。`,
   },
   {
     match: p => p === 'deepseek',
     thinking: 'low',
-    description: () => 'DeepSeek 1M 超长上下文高速低价模型，适合大仓库日志检索、大批量文件阅读摘要与轻量自动化检查。',
+    description: (m, meta) => `DeepSeek ${formatContextLabel(meta?.contextWindow, '1M 上下文')}高速低价模型，适合大仓库日志检索、大批量文件阅读摘要与轻量自动化检查。`,
   },
   {
     match: p => p === 'kimi-coding',
     thinking: 'medium',
-    description: (m, meta) => `Kimi 编码专用模型（256K 上下文${Array.isArray(meta?.input) && meta.input.includes('image') ? '，支持图片' : ''}），长文本理解稳健，适合中文工程阅读与中小型任务实现。`,
+    description: (m, meta) => `Kimi 编码专用模型（${formatContextLabel(meta?.contextWindow, '256K 上下文')}${Array.isArray(meta?.input) && meta.input.includes('image') ? '，支持图片' : ''}），长文本理解稳健，适合中文工程阅读与中小型任务实现。`,
   },
   {
     match: p => p === 'minimax-tokenplan',
     thinking: 'low',
-    description: m => /flash/i.test(m) ? 'MiniMax 极速编码预览版，512K 上下文，延迟低、开销小，适合快速代码改动与界面辅助。' : 'MiniMax 512K 通用多模态编码模型，适合常规脚本编写、文档总结与前端样式微调。',
+    description: (m, meta) => /flash/i.test(m) ? `MiniMax 极速编码预览版，${formatContextLabel(meta?.contextWindow, '512K 上下文')}，延迟低、开销小，适合快速代码改动与界面辅助。` : `MiniMax ${formatContextLabel(meta?.contextWindow, '512K 上下文')}通用多模态编码模型，适合常规脚本编写、文档总结与前端样式微调。`,
   },
   {
     match: p => p === 'aliyun-tokenplan',
     thinking: 'medium',
-    description: m => /flash/.test(m) ? '通义 Qwen 1M 超长上下文轻量极速版，适合长文档检索与低成本批处理。' : '通义 Qwen 1M 超长上下文主力模型，综合编码与中文理解能力均衡，适合中大型工程分析。',
+    description: (m, meta) => /flash/.test(m) ? `通义 Qwen ${formatContextLabel(meta?.contextWindow, '1M 上下文')}轻量极速版，适合长文档检索与低成本批处理。` : `通义 Qwen ${formatContextLabel(meta?.contextWindow, '1M 上下文')}主力模型，综合编码与中文理解能力均衡，适合中大型工程分析。`,
   },
   {
     match: p => p === 'mimo',
     thinking: 'medium',
-    description: m => /flash/.test(m) ? 'MiMo 1M 上下文极速版，适合低成本长上下文摘要与简单修改。' : 'MiMo 1M 上下文高性价比编码模型，适合常规业务模块开发与并行检查。',
+    description: (m, meta) => /flash/.test(m) ? `MiMo ${formatContextLabel(meta?.contextWindow, '1M 上下文')}极速版，适合低成本长上下文摘要与简单修改。` : `MiMo ${formatContextLabel(meta?.contextWindow, '1M 上下文')}高性价比编码模型，适合常规业务模块开发与并行检查。`,
   },
   {
     match: p => p === 'volc-ark',
     thinking: 'medium',
-    description: m => /lite/.test(m) ? '豆包 Seed 轻量多模态模型，适合快速识别界面截图与简单文本处理。' : '豆包 Seed Pro 多模态模型（256K 上下文），适合图文结合排查与中文业务开发。',
+    description: (m, meta) => /lite/.test(m) ? `豆包 Seed 轻量多模态模型（${formatContextLabel(meta?.contextWindow, '256K 上下文')}），适合快速识别界面截图与简单文本处理。` : `豆包 Seed Pro 多模态模型（${formatContextLabel(meta?.contextWindow, '256K 上下文')}），适合图文结合排查与中文业务开发。`,
   },
   {
     match: p => p === 'step-relay',
     thinking: 'medium',
-    description: () => '阶跃跃星中继预览模型（256K 上下文），适合探索性编码任务与方案对照。',
+    description: (m, meta) => `阶跃跃星中继预览模型（${formatContextLabel(meta?.contextWindow, '256K 上下文')}），适合探索性编码任务与方案对照。`,
   },
 ];
 
@@ -117,7 +122,7 @@ export function defaultModelProfile(provider, modelId, meta = {}) {
       return { recommendedThinking: rule.thinking, description: rule.description(modelId, meta) };
     }
   }
-  const ctxText = meta.contextWindow ? `${Math.round(meta.contextWindow / 1000)}K 上下文` : '标准上下文';
+  const ctxText = formatContextLabel(meta.contextWindow);
   const modalText = Array.isArray(meta.input) && meta.input.includes('image') ? '支持图文输入' : '纯文本输入';
   const reasonText = meta.reasoning ? '具备显式推理能力，适合分析与编码任务' : '响应直接快速，适合常规轻量问答与脚本';
   return {
