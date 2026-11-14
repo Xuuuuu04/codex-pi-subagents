@@ -48,7 +48,7 @@ export default function (pi: ExtensionAPI) {
   });
   pi.registerTool({
     name: 'ask_parent', label: '询问主代理',
-    description: 'Ask parent Codex a specific blocking question and wait for its answer. Use only when project evidence cannot resolve a required decision. The tool waits; do not repeatedly ask or invent an answer.',
+    description: 'Ask the parent agent a specific blocking question and wait for its answer. Use only when project evidence cannot resolve a required decision. The tool waits; do not repeatedly ask or invent an answer.',
     parameters: Type.Object({ question: Type.String({ maxLength: 12000 }) }),
     execute: (_id, values, signal) => call('question', values, signal),
   });

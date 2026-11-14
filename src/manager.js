@@ -13,6 +13,7 @@ import { agentPolicy, assertModelAllowed, reserveRequest } from './agent-policy.
 import { sandboxProfile, canonicalPath } from './tool-sandbox.js';
 import { createWorkspace, resolveWorkspaceMode, validateOwnedPaths, pathsOverlap } from './workspace.js';
 import { catalogFilesStamp, enrichModels, fetchPiRawModels, readModelSettings } from './model-settings.js';
+import { isCleanBenchmarkProfile } from './benchmark-profile.js';
 
 const extension = fileURLToPath(new URL('../extensions/communication.ts', import.meta.url));
 export const maxAgentLimit = 50;
@@ -140,7 +141,8 @@ export class Manager extends EventEmitter {
     };
     const explicitParent = antigravitySessionId ? { kind: 'antigravity', sessionId: antigravitySessionId, cwd: original } : parentSession ? { ...parentSession, cwd: parentSession.cwd || original } : null;
     const resolvedParentInfo = normalizeParentInfo(explicitParent, parentInfo);
-    const record = { id, parentId, parentInfo: resolvedParentInfo, policy: agentPolicy(effectivePolicy, { provider, model }), modelRequests: 0, name: name || id.slice(0, 8), model: { provider, model }, thinking: effectiveThinking, loadSkills: settingsDefaults.loadSkills, loadContextFiles: settingsDefaults.loadContextFiles, ownedPaths: paths, context,
+    const cleanBenchmark = isCleanBenchmarkProfile(context);
+    const record = { id, parentId, parentInfo: resolvedParentInfo, policy: agentPolicy(effectivePolicy, { provider, model }), modelRequests: 0, name: name || id.slice(0, 8), model: { provider, model }, thinking: effectiveThinking, loadSkills: cleanBenchmark ? false : settingsDefaults.loadSkills, loadContextFiles: cleanBenchmark ? false : settingsDefaults.loadContextFiles, ownedPaths: paths, context,
       status: 'starting', sequence: 0, questionIds: [], createdAt: new Date().toISOString(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reportedCost: 0 } };
     const lock = this.claim(record);
     try {
@@ -283,7 +285,7 @@ export class Manager extends EventEmitter {
     const agent = this.get(id);
     return this.serial(agent, async () => {
       if (activeStatuses.has(agent.record.status)) throw new Error('Wait for completion or interrupt before changing policy');
-      const next = agentPolicy(policy, agent.record.model); assertModelAllowed(next, agent.record.model);
+      const next = agentPolicy({ ...(agent.record.policy || {}), ...(policy || {}) }, agent.record.model); assertModelAllowed(next, agent.record.model);
       if (!agent.rpc || agent.rpc.exited) { this.capacity(); agent.lock = this.claim(agent.record); }
       agent.record.policy = next; agent.record.limitReason = undefined; agent.record.budgetWarned = false;
       this.event(agent, 'policy_changed', { policy: agent.record.policy, authorizationReference });

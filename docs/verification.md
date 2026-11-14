@@ -8,7 +8,7 @@
 
 ```bash
 npm run check                # 检查全部 JS / TS 源码语法
-npm test                     # 运行全部 88 项隔离单元、协议、沙箱与面板测试
+npm test                     # 运行全部 89 项隔离单元、协议、沙箱与面板测试
 npm run verify:communication # 使用本机配置的模型实测断线重连、阻塞提问与请求上限拦截
 npm run verify:live          # 实测多模型并行修改、兄弟通信与临时模型升降级
 node scripts/verify-codex.js # 实测真实 Codex CLI 通过 stdio MCP 调度子代理
@@ -16,7 +16,7 @@ node scripts/verify-codex.js # 实测真实 Codex CLI 通过 stdio MCP 调度子
 
 真机脚本均在系统临时目录中构造隔离演示包执行；运行生成的本地记录保存在 `.agents/records/`（已被 `.gitignore` 排除），包含当次提示词与模型输出，仅留本机核验使用。
 
-## 自动化测试覆盖模块（88 项）
+## 自动化测试覆盖模块（89 项）
 
 | 测试文件 | 验证重点 |
 | --- | --- |
@@ -30,7 +30,7 @@ node scripts/verify-codex.js # 实测真实 Codex CLI 通过 stdio MCP 调度子
 | `tests/tool-sandbox.test.js` | macOS Seatbelt `strict` / `dev` / `bypass` 三档文件读写、符号链接越界拦截、凭据与控制状态目录隔离、禁网拦截、取消时连带终止后代子进程 |
 | `tests/mcp.test.js` & `tests/mcp-tasks.test.js` | 真实 MCP SDK 客户端连接、24 个工具发现、标准 MCP Tasks 状态机、取消与 TTL 过期清理、资源订阅通知 |
 | `tests/quota.test.js` & `tests/quota-providers.test.js` | Codex、GLM / Z.ai、MiniMax Token Plan、DeepSeek、OpenCode Go 额度与余额解析、过期凭据前置报错、隐私身份字段剥离 |
-| `tests/workspace.test.js` & `tests/session-lifecycle.test.js` | 并行 Git worktree 分支隔离、脏工作区显式决策、空闲模型切换与 `next_run` 自动恢复、关闭后恢复不重放历史任务 |
+| `tests/workspace.test.js`、`tests/lifecycle.test.js`、`tests/models.test.js`、`tests/recovery.test.js` | 并行 Git worktree 分支隔离、脏工作区显式决策、空闲模型切换与 `next_run` 自动恢复、关闭后恢复不重放历史任务 |
 | `tests/benchmark-profile.test.js` | `BENCHMARK_PROMPT_PROFILE=clean` 洁净评测模式移除继承的上下文文件与技能且保留工具和沙箱限制 |
 
 ## 关键里程碑真机验证摘要

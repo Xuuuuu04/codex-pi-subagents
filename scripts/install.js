@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { atomicWriteJson } from '../src/storage.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
@@ -62,7 +63,11 @@ function backupPluginDir() {
   fs.mkdirSync(dest, { recursive: true, mode: 0o700 });
   for (const item of ['plugin.json', 'mcp_config.json', 'hooks.json', 'README.md']) {
     const src = path.join(pluginDir, item);
-    if (fs.existsSync(src)) fs.copyFileSync(src, path.join(dest, item));
+    if (fs.existsSync(src)) {
+      const dst = path.join(dest, item);
+      fs.copyFileSync(src, dst);
+      fs.chmodSync(dst, 0o600);
+    }
   }
 }
 
@@ -136,10 +141,10 @@ function writeAntigravityPlugin(env) {
   const hookScript = path.join(root, 'scripts/antigravity-hook.js');
   const hookCommand = `"${process.execPath}" "${hookScript}"`;
 
-  fs.writeFileSync(path.join(pluginDir, 'plugin.json'), JSON.stringify({
+  atomicWriteJson(path.join(pluginDir, 'plugin.json'), {
     name: 'pi-subagents',
     displayName: 'Pi Subagents',
-    version: pkg.version || '1.7.0',
+    version: pkg.version,
     description: 'Multi-model Pi subagent orchestration for Antigravity with session binding, reactive wait-events watcher, and PreInvocation/Stop hooks.',
     logo: 'assets/logo.svg',
     author: { name: 'mumuxsy' },
@@ -149,9 +154,9 @@ function writeAntigravityPlugin(env) {
       'Delegate parallel codebase review subagents using Pi models for this session',
       'Check active Pi subagents bound to this Antigravity conversation',
     ],
-  }, null, 2) + '\n');
+  }, 0o644);
 
-  fs.writeFileSync(path.join(pluginDir, 'mcp_config.json'), JSON.stringify({
+  atomicWriteJson(path.join(pluginDir, 'mcp_config.json'), {
     mcpServers: {
       'pi-subagents': {
         command: process.execPath,
@@ -159,14 +164,14 @@ function writeAntigravityPlugin(env) {
         env: mcpEnv,
       },
     },
-  }, null, 2) + '\n');
+  }, 0o600);
 
-  fs.writeFileSync(path.join(pluginDir, 'hooks.json'), JSON.stringify({
+  atomicWriteJson(path.join(pluginDir, 'hooks.json'), {
     'pi-subagents-callbacks': {
       PreInvocation: [{ type: 'command', command: hookCommand, timeout: 10 }],
       Stop: [{ type: 'command', command: hookCommand, timeout: 10 }],
     },
-  }, null, 2) + '\n');
+  }, 0o644);
 
   fs.writeFileSync(path.join(pluginDir, 'rules/AGENTS.md'), pluginRules);
   fs.writeFileSync(path.join(pluginDir, 'skills/pi-subagents/SKILL.md'), pluginSkill);

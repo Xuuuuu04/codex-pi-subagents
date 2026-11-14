@@ -30,7 +30,7 @@
 - **独立控制进程，断线不丢现场**：MCP 桥接进程通过私密 Unix Socket 连接后台独立控制器（`src/controller.js`）。主聊天窗口关闭或重连不会终止运行中的 Pi 子进程与待答复问题，新会话可随时调用 `resume_agent` 无损接手。
 - **可靠双向通信与阻塞式提问**：子代理可通过 `agent_message` 汇报阶段进展或与同组兄弟代理协作，遇到需求歧义时调用 `ask_parent` 原地暂停等待；主会话调用 `reply_question` 明确答复后子代理立即继续执行，支持幂等 `requestId` / `messageId` 防重放。
 - **实时三栏控制台“Pi 调度台”**：按宿主父会话自动分组，中间区域支持逐字流式推理与折叠式工具执行回放，右侧检查器提供会话概况、输出速度（`tok/s`）、上下文窗口水位与只读 Git 工作树内联差异（Diff），并与 `organize_agents` 工具实时同步自定义标题、备注、置顶与归档状态。
-- **模型能力画像与脱敏设置中心**：提供 `get_model_profiles` 工具与面板左下角设置中心，集中维护各服务商启停、脱敏 API Key、本机 Codex OAuth 一键导入、上下文窗口（支持一键同步至 1M 上下文）、推荐思考强度与中文能力描述，让主代理在派活前有据可依。
+- **模型能力画像与脱敏设置中心**：提供 `get_model_profiles` 工具与面板左下角设置中心，集中维护各服务商启停、脱敏 API Key、本机 Codex OAuth 一键导入、自定义上下文窗口（支持设为 1M 上下文并同步写回 `models.json`）、推荐思考强度与中文能力描述，让主代理在派活前有据可依。
 - **macOS Seatbelt 内核级三档沙箱**：通过 `/usr/bin/sandbox-exec` 约束工具与后代 shell 进程，默认在 Git 仓库分配独立 `worktree` 分支并在共享目录下强制校验不重叠的 `ownedPaths`；默认屏蔽 `~/.pi`、`~/.codex`、`~/.ssh` 等凭据目录，防止密钥外泄。
 - **多渠道套餐额度只读查询**：内置 `get_quota` 工具，在内存中只读使用本机 Pi 凭据查询 Codex、智谱 GLM / Z.ai、MiniMax Token Plan、DeepSeek 与 OpenCode Go 的周期剩余比例或账户余额，不改写凭据文件，也不暴露账号身份。
 
@@ -88,7 +88,7 @@ flowchart LR
   <img src="docs/assets/dashboard-changes.png" width="100%" alt="只读 Git 工作树内联差异审查" />
 </p>
 
-### 3. 模型画像、1M 上下文同步与脱敏凭据设置中心
+### 3. 模型画像、1M 上下文配置与脱敏凭据设置中心
 无需手动编辑底层 JSON：在左下角设置弹窗即可切换服务商与模型开关、更新脱敏展示的 API Key 或 Base URL、同步本机 Codex OAuth 登录，并为每款模型编写适用场景与短板提示（修改前自动以 `0600` 权限备份原文件）。
 
 <p align="center">
@@ -241,7 +241,7 @@ MCP 协议本身不保证在主代理结束一轮回复后重新唤醒模型，�
 ## 深入文档与治理
 
 - [可靠通信、权限沙箱与协议规范](docs/communication.md)
-- [验证矩阵与 88 项回归记录](docs/verification.md)
+- [验证矩阵与 89 项回归记录](docs/verification.md)
 - [代码结构与维护约定](AGENTS.md)
 - [参与贡献指南](CONTRIBUTING.md) · [安全漏洞私密上报](SECURITY.md) · [版本更新记录](CHANGELOG.md)
 

@@ -334,6 +334,7 @@ test('module line limits and zero-comment hygiene hold across refactored files',
     ...fs.readdirSync('dashboard').filter(name => name.endsWith('.js')).map(name => path.join('dashboard', name)),
     'src/dashboard.js',
     'src/dashboard-launcher.js',
+    'src/benchmark-profile.js',
   ];
   for (const file of cleanFiles) {
     const lines = fs.readFileSync(file, 'utf8').split('\n');

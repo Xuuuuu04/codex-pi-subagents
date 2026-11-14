@@ -88,7 +88,7 @@ Review exact file changes against each subagent's base commit directly inside th
   <img src="docs/assets/dashboard-changes.png" width="100%" alt="Inline Git Worktree Diff Inspector" />
 </p>
 
-### 3. Model Profiles, 1M Context Sync & Masked Credentials
+### 3. Model Profiles, 1M Context Overrides & Masked Credentials
 Configure providers, sync local Codex OAuth tokens, adjust context windows, and author selection guidance read by parent agents via `get_model_profiles`—without ever exposing raw keys to the browser or MCP responses.
 
 <p align="center">
@@ -110,7 +110,7 @@ Configure providers, sync local Codex OAuth tokens, adjust context windows, and 
 git clone https://github.com/mumuxsy/pi-subagents.git
 cd pi-subagents
 
-# 1. Install locked dependencies and run offline syntax + 88 sandbox/protocol tests
+# 1. Install locked dependencies and run offline syntax + 89 sandbox/protocol tests
 npm ci --ignore-scripts
 npm run check
 npm test
@@ -164,7 +164,7 @@ npm run dashboard
 ## Documentation & Governance
 
 - [Reliable Communication, Sandbox & Protocol Spec (中文)](docs/communication.md)
-- [Verification Matrix & 88-Test Suite Summary (中文)](docs/verification.md)
+- [Verification Matrix & 89-Test Suite Summary (中文)](docs/verification.md)
 - [Contributing Guide](CONTRIBUTING.md) · [Security Policy](SECURITY.md) · [Changelog](CHANGELOG.md)
 
 ## License

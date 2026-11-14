@@ -13,7 +13,7 @@
 - `npm run verify:communication` 真机验证断线恢复与请求限制；`npm run verify:live` 真机多模型验证；`node scripts/verify-codex.js` 真机 Codex CLI 接入验证。
 
 ## 目录地图
-- `src/server.js`、`src/server-session-tools.js`、`src/server-control-tools.js`：MCP 服务入口与 24 个主会话工具定义（含模型画像 `get_model_profiles`、会话绑定 `bind_session`、健康检查 `get_subagent_health` 与会话整理 `organize_agents`）。
+- `src/server.js`：MCP 服务入口与 24 个主会话工具定义（含模型画像 `get_model_profiles`、会话绑定 `bind_session`、健康检查 `get_subagent_health` 与会话整理 `organize_agents`）。
 - `src/model-profiles.js`、`src/provider-auth.js`、`src/model-settings.js`：内置模型能力画像、6 个 Pi 工具清单、凭据脱敏与本机 Codex 登录同步（`sync_codex`）、`model-settings.json` / `models-catalog.json` 严格读写与基线保留、`auth.json` / `models.json` `0600` 权限备份与原子同步（含 `models[]` 与 `modelOverrides`）及 `pi auth check` 封装。
 - `src/quota*.js`：只读读取 Pi 凭据查询 Codex、智谱 GLM / Z.ai、MiniMax、DeepSeek 和 OpenCode Go 额度或余额；固定接口域名，剥离账号隐私字段。
 - `src/controller*.js`：独立后台管理进程、私密 Unix Socket（持久连接、断连取消与新建代理即时唤醒长轮询）、宿主父会话身份识别与断线重连。
@@ -25,7 +25,7 @@
 - `src/dashboard*.js`、`dashboard/`：“Pi 调度台”后端（SSE `/api/events`、`/api/agents/:id/live`、`/api/system`、60 秒缓存 `/api/quota`、`/api/settings*`、`dashboard.lock` 并发锁）与无外部前端框架依赖的 ES 模块化界面。
 - `extensions/`：注入新 Pi 子进程的权限沙箱扩展（`policy.ts`）与双向通信扩展（`communication.ts`）。
 - `scripts/`：语法检查、三端安装打包（含 Antigravity 插件校验）、`antigravity-hook.js`、`wait-events.js` 及真机验收脚本。
-- `tests/`：88 项隔离行为测试与单文件行数/注释卫生检查；`tests/helpers/` 为隔离 Pi 模拟进程。
+- `tests/`：89 项隔离行为测试与单文件行数/注释卫生检查；`tests/helpers/` 为隔离 Pi 模拟进程。
 - `docs/`：协议与沙箱说明（`communication.md`）、验证矩阵（`verification.md`）与开源界面预览图（`assets/`）。
 - `.agents/`：本机运行状态、工作树与私密验证记录，由 `.gitignore` 排除。
 
