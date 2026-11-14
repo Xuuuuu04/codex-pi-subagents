@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { applyBenchmarkPromptProfile, isCleanBenchmarkProfile } from '../src/benchmark-profile.js';
-import { createTestEnvironment } from './helpers/setup.js';
+import { settled, setup, spawn } from './helpers/setup.js';
 
 const options = () => ({
   appendSystemPrompt: 'Parent policy and tools\nProvided context:\nBENCHMARK_PROMPT_PROFILE=clean',
@@ -33,18 +33,10 @@ test('default and unrecognized profile leave the original options unchanged', ()
 });
 
 test('Manager.spawn solidifies loadSkills=false and loadContextFiles=false under BENCHMARK_PROMPT_PROFILE=clean', async t => {
-  const env = createTestEnvironment(t);
-  const spawned = await env.manager.spawn({
-    cwd: env.cwd,
-    provider: 'test',
-    model: 'fast',
-    ownedPaths: ['src'],
-    workspaceMode: 'shared',
-    context: 'Run evaluation\nBENCHMARK_PROMPT_PROFILE=clean',
-    prompt: 'reply ok',
-  });
-  await env.manager.wait({ agentIds: [spawned.id], timeoutMs: 5000 });
-  const saved = env.manager.storage.load(spawned.id);
+  const { cwd, manager } = await setup(t);
+  const created = await spawn(manager, cwd, 'done', { context: 'Run evaluation\nBENCHMARK_PROMPT_PROFILE=clean' });
+  await settled(manager, created.id);
+  const saved = manager.storage.load(created.id);
   assert.equal(saved.loadSkills, false);
   assert.equal(saved.loadContextFiles, false);
 });

@@ -154,7 +154,7 @@ function writeAntigravityPlugin(env) {
       'Delegate parallel codebase review subagents using Pi models for this session',
       'Check active Pi subagents bound to this Antigravity conversation',
     ],
-  }, 0o644);
+  }, { pretty: true });
 
   atomicWriteJson(path.join(pluginDir, 'mcp_config.json'), {
     mcpServers: {
@@ -164,14 +164,14 @@ function writeAntigravityPlugin(env) {
         env: mcpEnv,
       },
     },
-  }, 0o600);
+  }, { pretty: true });
 
   atomicWriteJson(path.join(pluginDir, 'hooks.json'), {
     'pi-subagents-callbacks': {
       PreInvocation: [{ type: 'command', command: hookCommand, timeout: 10 }],
       Stop: [{ type: 'command', command: hookCommand, timeout: 10 }],
     },
-  }, 0o644);
+  }, { pretty: true });
 
   fs.writeFileSync(path.join(pluginDir, 'rules/AGENTS.md'), pluginRules);
   fs.writeFileSync(path.join(pluginDir, 'skills/pi-subagents/SKILL.md'), pluginSkill);
