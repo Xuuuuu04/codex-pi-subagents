@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
+import { atomicWriteJson } from './storage.js';
 
 const terminal = status => ['completed', 'failed', 'cancelled'].includes(status);
 const resultOf = agent => ({ content: [{ type: 'text', text: JSON.stringify(agent) }], structuredContent: { result: agent }, ...(agent.status === 'failed' ? { isError: true } : {}) });
@@ -15,7 +16,7 @@ export class FileTaskStore {
     if (record.owner !== owner) throw new Error('Task belongs to another parent');
     return record;
   }
-  save(record) { const file = this.filename(record.task.taskId); const temporary = file + `.${process.pid}.tmp`; fs.writeFileSync(temporary, JSON.stringify(record), { mode: 0o600 }); fs.renameSync(temporary, file); }
+  save(record) { atomicWriteJson(this.filename(record.task.taskId), record); }
   async createTask(params, requestId, request, owner) {
     if (params.context?.agentId) {
       for (const file of fs.readdirSync(this.directory).filter(v => v.endsWith('.json'))) {
@@ -76,7 +77,18 @@ export class FileTaskStore {
     const { tasks } = await this.listTasks(undefined, owner);
     return tasks.map(task => { const r = this.read(task.taskId, owner); return { task, progressToken: r.progressToken, sequence: this.manager.agents.get(r.agentId)?.record.sequence || 0 }; });
   }
-  prune() { for (const file of fs.readdirSync(this.directory).filter(v => v.endsWith('.json'))) { const r = JSON.parse(fs.readFileSync(path.join(this.directory, file), 'utf8')); if (Date.now() >= Date.parse(r.task.createdAt) + r.task.ttl) fs.unlinkSync(path.join(this.directory, file)); } }
+  prune() {
+    if (!fs.existsSync(this.directory)) return 0;
+    let removed = 0;
+    for (const file of fs.readdirSync(this.directory).filter(v => v.endsWith('.json'))) {
+      const target = path.join(this.directory, file);
+      try {
+        const r = JSON.parse(fs.readFileSync(target, 'utf8'));
+        if (Date.now() >= Date.parse(r.task.createdAt) + r.task.ttl) { fs.unlinkSync(target); removed++; }
+      } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    }
+    return removed;
+  }
   async adopt(id, owner, isConnected) {
     const record = JSON.parse(fs.readFileSync(this.filename(id), 'utf8'));
     if (record.owner !== owner && isConnected(record.owner)) throw new Error('Task belongs to an attached parent');

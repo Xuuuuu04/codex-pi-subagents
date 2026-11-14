@@ -1,10 +1,9 @@
 import fs from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { estimateTextTokens } from './token-estimate.js';
 
-/** Rough token count for streamed text: CJK about 1.3 characters per token, other text about 3.8. */
-export function estimateTokens(text) {
-  let cjk = 0;
-  for (const ch of text) if (/[　-鿿＀-￯]/.test(ch)) cjk++;
-  return cjk / 1.3 + (text.length - cjk) / 3.8;
+export function estimateTokens(text = '') {
+  return estimateTextTokens(text);
 }
 
 /** Streamed text of one raw provider event, for OpenAI Responses, Chat Completions and Anthropic shapes. */
@@ -76,10 +75,10 @@ export class SpeedMeter {
   }
   flush() {
     try {
-      const temporary = `${this.file}.${process.pid}.tmp`;
+      const temporary = `${this.file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
       fs.writeFileSync(temporary, JSON.stringify(this.snapshot()), { mode: 0o600 });
       fs.renameSync(temporary, this.file);
-    } catch {} // Speed mirroring is best effort; it never affects the agent.
+    } catch {}
   }
   close() { clearTimeout(this.timer); this.timer = null; this.request = null; this.flush(); }
 }

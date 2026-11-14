@@ -10,7 +10,7 @@ import { MessageChannel } from './messages.js';
 import { MessageStore } from './message-store.js';
 import { agentPolicy, assertModelAllowed, reserveRequest } from './agent-policy.js';
 import { sandboxProfile, canonicalPath } from './tool-sandbox.js';
-import { createWorkspace, validateOwnedPaths, pathsOverlap } from './workspace.js';
+import { createWorkspace, resolveWorkspaceMode, validateOwnedPaths, pathsOverlap } from './workspace.js';
 
 const extension = fileURLToPath(new URL('../extensions/communication.ts', import.meta.url));
 export const maxAgentLimit = 50;
@@ -107,15 +107,15 @@ export class Manager extends EventEmitter {
     if (!path.isAbsolute(cwd)) throw new Error('cwd must be an absolute directory path');
     this.capacity(); await this.validateModel({ provider, model }); this.capacity();
     const paths = validateOwnedPaths(ownedPaths);
-    const original = fs.realpathSync(cwd);
-    if (workspaceMode === 'shared' || workspaceMode === 'auto') {
+    const { resolvedCwd: original, effectiveMode } = resolveWorkspaceMode({ cwd, mode: workspaceMode });
+    if (effectiveMode === 'shared') {
       for (const a of this.agents.values()) {
         if (a.record.workspace?.mode === 'shared' && a.rpc && !a.rpc.exited && pathsOverlap(paths.map(p => canonicalPath(path.resolve(original, p))), a.record.ownedPaths.map(p => canonicalPath(path.resolve(a.record.workspace.sourceCwd, p))))) throw new Error('Owned paths overlap another live agent in the shared directory');
       }
-    }
-    for (const saved of this.storage.all()) {
-      if (this.agents.has(saved.id) || saved.workspace?.mode !== 'shared' || !processAlive(saved.ownerPid) || !fs.existsSync(path.join(this.storage.directory(saved.id), 'owner.lock'))) continue;
-      if (pathsOverlap(paths.map(p => canonicalPath(path.resolve(original, p))), saved.ownedPaths.map(p => canonicalPath(path.resolve(saved.workspace.cwd, p))))) throw new Error('Owned paths overlap a live agent from an earlier controller');
+      for (const saved of this.storage.all()) {
+        if (this.agents.has(saved.id) || saved.workspace?.mode !== 'shared' || !processAlive(saved.ownerPid) || !fs.existsSync(path.join(this.storage.directory(saved.id), 'owner.lock'))) continue;
+        if (pathsOverlap(paths.map(p => canonicalPath(path.resolve(original, p))), saved.ownedPaths.map(p => canonicalPath(path.resolve(saved.workspace.cwd, p))))) throw new Error('Owned paths overlap a live agent from an earlier controller');
+      }
     }
     const id = randomUUID();
     const record = { id, parentId, parentInfo, policy: agentPolicy(policy, { provider, model }), modelRequests: 0, name: name || id.slice(0, 8), model: { provider, model }, thinking, ownedPaths: paths, context,

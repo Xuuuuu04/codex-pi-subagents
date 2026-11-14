@@ -14,21 +14,25 @@ export function pathsOverlap(a, b) {
 }
 function git(cwd, args) { return execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim(); }
 
-/** Concurrent Git agents get independent checkouts. Shared paths are explicit and checked by Manager. */
-export function createWorkspace({ cwd, id, mode = 'auto', baseRef, directory }) {
-  const original = fs.realpathSync(cwd);
-  if (!fs.statSync(original).isDirectory()) throw new Error('cwd must be a directory');
+export function resolveWorkspaceMode({ cwd, mode = 'auto' }) {
+  const resolvedCwd = fs.realpathSync(cwd);
+  if (!fs.statSync(resolvedCwd).isDirectory()) throw new Error('cwd must be a directory');
   let repository;
-  try { repository = git(original, ['rev-parse', '--show-toplevel']); }
+  try { repository = git(resolvedCwd, ['rev-parse', '--show-toplevel']); }
   catch (error) { if (mode === 'worktree') throw new Error('worktree requires a Git repository', { cause: error }); }
-  if (mode === 'shared' || !repository) return { cwd: original, sourceCwd: original, mode: 'shared', note: 'Shared directory; file and shell permissions are enforced separately by the agent tool policy.' };
+  const effectiveMode = mode === 'shared' || !repository ? 'shared' : 'worktree';
+  return { resolvedCwd, root: repository || null, effectiveMode };
+}
+
+export function createWorkspace({ cwd, id, mode = 'auto', baseRef, directory }) {
+  const { resolvedCwd: original, root: repository, effectiveMode } = resolveWorkspaceMode({ cwd, mode });
+  if (effectiveMode === 'shared') return { cwd: original, sourceCwd: original, mode: 'shared', note: 'Shared directory; file and shell permissions are enforced separately by the agent tool policy.' };
   const base = git(repository, ['rev-parse', '--verify', `${baseRef || 'HEAD'}^{commit}`]);
   const dirty = !!git(repository, ['status', '--porcelain']);
   if (dirty && !baseRef) throw new Error('Git checkout has local changes. Supply an explicit committed baseRef, or explicitly choose shared mode.');
   const branch = `pi-agent/${id}`;
   const target = path.join(directory, 'worktree');
   const relative = path.relative(repository, original);
-  // Check before creating a branch: an uncommitted subdirectory may be absent from the selected revision.
   if (relative) {
     let kind;
     try { kind = git(repository, ['cat-file', '-t', `${base}:${relative}`]); }

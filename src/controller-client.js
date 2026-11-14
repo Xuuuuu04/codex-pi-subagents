@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { defaultMaxAgents } from './manager.js';
+import { processAlive } from './storage.js';
 
 const script = fileURLToPath(new URL('./controller.js', import.meta.url));
 /** 当前桥接进程所属的父会话：Codex 用 CODEX_THREAD_ID，Claude Code 用 CLAUDE_CODE_SESSION_ID（桌面端另有 host 会话编号）。 */
@@ -73,8 +74,16 @@ export class ControllerClient extends EventEmitter {
 async function probe(root) {
   const file = path.join(root, 'controller.json');
   if (!fs.existsSync(file)) return null;
-  try { const info = JSON.parse(fs.readFileSync(file, 'utf8'));  await new ControllerClient(root, info).call('health'); return info; }
-  catch { return null; }
+  try {
+    const info = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const health = await new ControllerClient(root, info).call('health');
+    if (health?.scriptPath && !fs.existsSync(health.scriptPath) && (health.activeAgents ?? 0) === 0 && (health.totalAgents ?? 0) === 0) {
+      try { process.kill(info.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+      for (let i = 0; i < 30 && processAlive(info.pid); i++) await new Promise(resolve => setTimeout(resolve, 50));
+      return null;
+    }
+    return info;
+  } catch { return null; }
 }
 export async function connectController({ root, executable = 'pi', maxAgents = defaultMaxAgents }) {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });

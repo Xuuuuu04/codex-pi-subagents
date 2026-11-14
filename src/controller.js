@@ -2,10 +2,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
 import { Manager, defaultMaxAgents } from './manager.js';
-import { processAlive } from './storage.js';
+import { processAlive, atomicWriteJson } from './storage.js';
 import { FileTaskStore } from './task-store.js';
+
+const controllerScriptPath = fileURLToPath(import.meta.url);
+const activeAgentStatuses = new Set(['starting', 'running', 'waiting', 'finishing']);
+const operationRetentionMs = 7 * 86400 * 1000;
+const detachedParentRetentionMs = 86400 * 1000;
 
 const root = path.resolve(process.env.PI_SUBAGENTS_STATE_DIR);
 const lock = path.join(root, 'controller.lock');
@@ -21,8 +27,40 @@ catch (error) { if (error.code === 'EEXIST') process.exit(0); throw error; }
 const manager = await new Manager({ root, executable: process.env.PI_EXECUTABLE || 'pi', maxAgents: Number(process.env.PI_SUBAGENTS_MAX_AGENTS || defaultMaxAgents) }).start();
 const parents = new Map();
 const tasks = new FileTaskStore(root, manager);
-const cleanup = setInterval(() => { try { tasks.prune(); } catch (error) { process.stderr.write(`Task cleanup failed: ${error.message}\n`); } }, 60000); cleanup.unref();
 const operations = path.join(root, 'operations'); fs.mkdirSync(operations, { recursive: true, mode: 0o700 });
+const writes = new Map();
+
+function pruneRuntime() {
+  tasks.prune();
+  const now = Date.now();
+  if (fs.existsSync(operations)) {
+    for (const file of fs.readdirSync(operations).filter(name => name.endsWith('.json'))) {
+      const key = file.slice(0, -5);
+      if (writes.has(key)) continue;
+      const target = path.join(operations, file);
+      try {
+        if (now - fs.statSync(target).mtimeMs > operationRetentionMs) fs.unlinkSync(target);
+      } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    }
+  }
+  const callbacksDir = path.join(root, 'callbacks');
+  if (fs.existsSync(callbacksDir)) {
+    for (const file of fs.readdirSync(callbacksDir).filter(name => name.endsWith('.json'))) {
+      const id = file.slice(0, -5);
+      const target = path.join(callbacksDir, file);
+      if (manager.agents.has(id) || fs.existsSync(path.join(root, id))) continue;
+      try {
+        if (now - fs.statSync(target).mtimeMs > operationRetentionMs) fs.unlinkSync(target);
+      } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    }
+  }
+  const ownedParents = new Set([...manager.agents.values()].map(a => a.record.parentId).filter(Boolean));
+  for (const [id, info] of parents) {
+    if (!info.connected && !ownedParents.has(id) && now - (info.lastSeen || 0) > detachedParentRetentionMs) parents.delete(id);
+  }
+}
+
+const cleanup = setInterval(() => { try { pruneRuntime(); } catch (error) { process.stderr.write(`Task cleanup failed: ${error.message}\n`); } }, 60000); cleanup.unref();
 const token = randomUUID();
 // macOS limits Unix socket paths; its dedicated directory is private even when the state root is long.
 const socketDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-controller-')); fs.chmodSync(socketDirectory, 0o700);
@@ -32,7 +70,6 @@ function own(parentId, agentId) {
   if (agent.record.parentId !== parentId) throw new Error('Agent belongs to another parent; explicitly resume only after its parent detaches.');
   return agent;
 }
-const writes = new Map();
 async function once(parentId, key, values, operation) {
   if (!key) return operation();
   if (!/^[0-9a-f-]{36}$/.test(key)) throw new Error('Invalid requestId');
@@ -47,7 +84,7 @@ async function once(parentId, key, values, operation) {
     throw new Error('Operation outcome is uncertain after a controller failure; inspect saved agents before dispatching new work.');
   }
   const record = { parentId, fingerprint, state: 'attempted' };
-  const save = () => { const temp = file + '.tmp'; fs.writeFileSync(temp, JSON.stringify(record), { mode: 0o600 }); fs.renameSync(temp, file); };
+  const save = () => atomicWriteJson(file, record);
   save();
   const pending = (async () => {
     try { record.result = await operation(); record.state = 'completed'; save(); return record.result; }
@@ -57,7 +94,10 @@ async function once(parentId, key, values, operation) {
   try { return await pending; } finally { writes.delete(key); }
 }
 async function dispatch(parentId, method, v) {
-  if (method === 'health') return { service: 'pi-controller', pid: process.pid };
+  if (method === 'health') {
+    const activeAgents = [...manager.agents.values()].filter(a => activeAgentStatuses.has(a.record.status)).length;
+    return { service: 'pi-controller', pid: process.pid, scriptPath: controllerScriptPath, activeAgents, totalAgents: manager.agents.size };
+  }
   // 父会话身份（客户端类型、会话编号、所在目录）由桥接进程自报，只用于面板分组显示，不参与任何权限判断。
   if (method === 'attach') {
     const parent = v.parent && typeof v.parent === 'object' ? v.parent : {};
@@ -130,7 +170,7 @@ const server = http.createServer(async (request, response) => {
 });
 await new Promise(resolve => server.listen(socket, resolve)); fs.chmodSync(socket, 0o600);
 const metadata = path.join(root, 'controller.json');
-fs.writeFileSync(metadata + '.tmp', JSON.stringify({ pid: process.pid, socket, token }), { mode: 0o600 }); fs.renameSync(metadata + '.tmp', metadata);
+atomicWriteJson(metadata, { pid: process.pid, socket, token, scriptPath: controllerScriptPath });
 let closing = false;
 async function close() {
   if (closing) return; closing = true;

@@ -1,8 +1,31 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 
-/** Persist private agent metadata atomically; credentials remain in Pi's own auth store. */
+export function atomicWriteJson(target, value, { pretty = false } = {}) {
+  fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
+  const temporary = `${target}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  const text = pretty ? JSON.stringify(value, null, 2) + '\n' : JSON.stringify(value);
+  fs.writeFileSync(temporary, text, { mode: 0o600 });
+  fs.renameSync(temporary, target);
+}
+
+export function readTail(file, limit = 500, { tolerateIncomplete = true } = {}) {
+  if (!fs.existsSync(file)) return [];
+  const fd = fs.openSync(file, 'r');
+  try {
+    const size = fs.fstatSync(fd).size;
+    const start = Math.max(0, size - 2 * 1024 * 1024);
+    const bytes = Buffer.alloc(size - start);
+    fs.readSync(fd, bytes, 0, bytes.length, start);
+    const lines = bytes.toString('utf8').split('\n');
+    if (tolerateIncomplete || lines.at(-1)) lines.pop();
+    if (start) lines.shift();
+    return lines.filter(Boolean).slice(-limit).map(line => JSON.parse(line));
+  } finally { fs.closeSync(fd); }
+}
+
 export class Storage {
   constructor(root) {
     this.root = path.resolve(root);
@@ -13,18 +36,13 @@ export class Storage {
     return path.join(this.root, id);
   }
   save(record) {
-    const dir = this.directory(record.id);
-    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const target = path.join(dir, 'agent.json');
-    const temporary = target + `.${process.pid}.tmp`;
-    fs.writeFileSync(temporary, JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
-    fs.renameSync(temporary, target);
+    const target = path.join(this.directory(record.id), 'agent.json');
+    atomicWriteJson(target, record, { pretty: true });
   }
   load(id) { return JSON.parse(fs.readFileSync(path.join(this.directory(id), 'agent.json'), 'utf8')); }
   all() {
     return fs.readdirSync(this.root).filter(id => /^[0-9a-f-]{36}$/.test(id)).map(id => this.load(id));
   }
-  /** Remove only an incomplete final JSONL record before explicitly recovering a crashed session. */
   repairEvents(id) {
     const file = path.join(this.directory(id), 'events.jsonl'); if (!fs.existsSync(file)) return;
     const fd = fs.openSync(file, 'r+');
@@ -46,7 +64,6 @@ export class Storage {
     const file = path.join(this.directory(id), 'events.jsonl');
     if (!fs.existsSync(file)) return [];
     if (afterSequence !== undefined) {
-      // JSONL records remain durable even when the controller's in-memory tail is full.
       const result = []; let pending = ''; const decoder = new StringDecoder('utf8'); const fd = fs.openSync(file, 'r');
       try {
         const bytes = Buffer.alloc(65536); let count;
@@ -64,17 +81,7 @@ export class Storage {
         return result;
       } finally { fs.closeSync(fd); }
     }
-    const fd = fs.openSync(file, 'r');
-    try {
-      const size = fs.fstatSync(fd).size;
-      const start = Math.max(0, size - 2 * 1024 * 1024);
-      const bytes = Buffer.alloc(size - start);
-      fs.readSync(fd, bytes, 0, bytes.length, start);
-      const lines = bytes.toString('utf8').split('\n');
-      if (lines.at(-1)) lines.pop(); // Crash recovery ignores an incomplete final JSONL record.
-      if (start) lines.shift();
-      return lines.filter(Boolean).slice(-500).map(line => JSON.parse(line));
-    } finally { fs.closeSync(fd); }
+    return readTail(file, 500, { tolerateIncomplete: false });
   }
 }
 

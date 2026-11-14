@@ -81,10 +81,9 @@ ${policy.allowNetwork ? '' : '(deny network*) (allow network* (remote ip "localh
 }
 const children = new Set(); let cleanupInstalled = false;
 function terminateChildren() { for (const pid of children) { try { process.kill(-pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') process.stderr.write(`Tool shutdown failed: ${error.message}\n`); } } }
-export function runSandboxed(policy, executable, args, { signal, timeout = 60000, onData = () => {}, input } = {}) {
+export function runSandboxed(policy, executable, args, { signal, timeout = 60000, onData = () => {}, onStdout, onStderr, input } = {}) {
   const profile = sandboxProfile(policy);
   if (!cleanupInstalled) { cleanupInstalled = true; process.once('exit', terminateChildren); process.once('SIGTERM', () => { terminateChildren(); process.exit(143); }); }
-  // Provider credentials and controller capability tokens never enter a tool subprocess environment.
   const env = { PATH: process.env.PATH, LANG: process.env.LANG || 'en_US.UTF-8', TMPDIR: policy.tempDir };
   if (sandboxMode(policy) !== 'strict') Object.assign(env, { HOME: os.homedir(), PATH: [path.join(os.homedir(), '.local/bin'), '/Library/Developer/CommandLineTools/usr/bin', '/opt/homebrew/bin', process.env.PATH].join(':') });
   return new Promise((resolve, reject) => {
@@ -92,7 +91,8 @@ export function runSandboxed(policy, executable, args, { signal, timeout = 60000
     children.add(child.pid);
     const stop = () => { try { process.kill(-child.pid, 'SIGKILL'); } catch (error) { if (error.code !== 'ESRCH') reject(error); } };
     const timer = setTimeout(stop, timeout); signal?.addEventListener('abort', stop, { once: true });
-    child.stdout.on('data', onData); child.stderr.on('data', onData);
+    child.stdout.on('data', chunk => { onStdout?.(chunk); onData(chunk); });
+    child.stderr.on('data', chunk => { onStderr?.(chunk); onData(chunk); });
     child.on('error', error => { children.delete(child.pid); clearTimeout(timer); signal?.removeEventListener('abort', stop); reject(error); });
     child.on('close', (code, termination) => { children.delete(child.pid); clearTimeout(timer); signal?.removeEventListener('abort', stop); resolve({ exitCode: code ?? (termination ? 137 : 1) }); });
     child.stdin.on('error', error => { if (error.code !== 'EPIPE') reject(error); });
@@ -101,14 +101,26 @@ export function runSandboxed(policy, executable, args, { signal, timeout = 60000
   });
 }
 
-const worker = `const fs=require('fs'); const [operation,file]=process.argv.slice(1);
+const worker = `const fs=require('fs'); const [operation,file,extra]=process.argv.slice(1);
 if(operation==='read') process.stdout.write(fs.readFileSync(file));
+else if(operation==='read_head'){const len=Math.max(1,Number(extra)||64);const fd=fs.openSync(file,'r');try{const buf=Buffer.alloc(len);const n=fs.readSync(fd,buf,0,len,0);process.stdout.write(buf.subarray(0,n));}finally{fs.closeSync(fd);}}
 else if(operation==='access') fs.accessSync(file);
 else {let value='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>value+=c);process.stdin.on('end',()=>{fs.mkdirSync(require('path').dirname(file),{recursive:true});fs.writeFileSync(file,value)});}`;
-export async function fileOperation(policy, operation, filename, content) {
+export async function fileOperation(policy, operation, filename, content, options = {}) {
   const file = assertToolPath(filename, policy, operation === 'write');
-  const chunks = [];
-  const result = await runSandboxed(policy, process.execPath, ['-e', worker, operation, file], { input: content, onData: chunk => chunks.push(chunk) });
-  if (result.exitCode !== 0) throw new Error('Sandboxed file operation failed or was denied');
-  return Buffer.concat(chunks);
+  const stdout = [];
+  const stderr = [];
+  const workerArgs = ['--no-warnings', '-e', worker, operation, file];
+  if (operation === 'read_head') workerArgs.push(String(options.length || 64));
+  const result = await runSandboxed(policy, process.execPath, workerArgs, {
+    input: content,
+    onStdout: chunk => stdout.push(chunk),
+    onStderr: chunk => stderr.push(chunk),
+    signal: options.signal,
+  });
+  if (result.exitCode !== 0) {
+    const detail = Buffer.concat(stderr).toString('utf8').trim();
+    throw new Error(detail ? `Sandboxed ${operation} failed: ${detail.split('\n')[0]}` : `Sandboxed file operation failed or was denied (${result.exitCode})`);
+  }
+  return Buffer.concat(stdout);
 }

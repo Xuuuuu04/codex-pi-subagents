@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
+import { atomicWriteJson } from './storage.js';
 
 const identity = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
 /** Durable message receipts. Uncertain delivery never triggers an automatic second model instruction. */
@@ -11,9 +12,7 @@ export class MessageStore {
     return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : [];
   }
   save(agentId, records) {
-    const file = path.join(this.storage.directory(agentId), 'messages.json');
-    const temp = file + `.${process.pid}.tmp`;
-    fs.writeFileSync(temp, JSON.stringify(records), { mode: 0o600 }); fs.renameSync(temp, file);
+    atomicWriteJson(path.join(this.storage.directory(agentId), 'messages.json'), records);
   }
   create(agentId, { messageId = randomUUID(), ...data }) {
     if (!/^[0-9a-f-]{36}$/.test(messageId)) throw new Error('Invalid message ID');

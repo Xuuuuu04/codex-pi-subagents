@@ -1,26 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { processAlive } from './storage.js';
+import { processAlive, readTail, atomicWriteJson } from './storage.js';
+import { estimateRoundedTokens } from './token-estimate.js';
 
 const active = new Set(['starting', 'running', 'waiting', 'finishing', 'idle']);
 const working = new Set(['starting', 'running', 'waiting', 'finishing']);
 export const isAgentId = id => /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id);
-
-/** Read bounded, complete JSONL records while another process may still be appending. */
-export function readTail(file, limit = 500) {
-  if (!fs.existsSync(file)) return [];
-  const fd = fs.openSync(file, 'r');
-  try {
-    const size = fs.fstatSync(fd).size;
-    const start = Math.max(0, size - 2 * 1024 * 1024);
-    const bytes = Buffer.alloc(size - start);
-    fs.readSync(fd, bytes, 0, bytes.length, start);
-    const lines = bytes.toString('utf8').split('\n');
-    lines.pop(); // A writer may not have finished its last record.
-    if (start) lines.shift();
-    return lines.filter(Boolean).slice(-limit).map(line => JSON.parse(line));
-  } finally { fs.closeSync(fd); }
-}
+export { readTail };
 
 /** Bound every string inside tool arguments so one huge write cannot flood the page. */
 function clipValue(value, limit = 6000) {
@@ -66,10 +52,8 @@ export function requestSpeeds(entries, limit = 40) {
   return speeds.slice(-limit);
 }
 
-/** 粗略估算 token：中文约 1.3 字一个，其他约 3.8 个字符一个；只用来显示占比，不当作计费数字。 */
 export function estimateTokens(text = '') {
-  let cjk = 0; for (const ch of text) if (/[\u3000-\u9fff\uff00-\uffef]/.test(ch)) cjk++;
-  return Math.round(cjk / 1.3 + (text.length - cjk) / 3.8);
+  return estimateRoundedTokens(text);
 }
 const sectionNames = { preamble: '角色说明', tools: '工具说明', rules: '规则', docs: '文档', addendum: '附加说明', project_context: '项目说明', skills: '技能列表', cwd: '工作目录' };
 /** 上下文分析：每次请求实际送进模型的 token（输入 + 缓存读写），以及按来源估算的构成。 */
@@ -150,8 +134,7 @@ export class DashboardData {
     } catch { return { agents: {}, groups: {} }; }
   }
   saveMarks(marks) {
-    const temporary = `${this.marksFile}.tmp`; fs.mkdirSync(this.root, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(temporary, JSON.stringify(marks), { mode: 0o600 }); fs.renameSync(temporary, this.marksFile);
+    atomicWriteJson(this.marksFile, marks);
   }
   /** 手动把会话在面板里标记为已结束或已关闭；status 为 null 时取消标记。只写面板自己的文件。 */
   mark(id, status) {
