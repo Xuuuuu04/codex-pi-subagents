@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import net from 'node:net';
 import path from 'node:path';
 import http from 'node:http';
 import { setup, spawn, settled } from './helpers/setup.js';
 import { DashboardData, readTail, summarizeActivity, contextAnalysis, pullRequestLinks } from '../src/dashboard-data.js';
 import { startDashboard } from '../src/dashboard.js';
+import { ensureDashboard } from '../src/dashboard-launcher.js';
 import { LiveStream } from '../src/live-stream.js';
 
 test('dashboard reads live agents and identifies disconnected controllers without changing ownership', async t => {
@@ -157,4 +159,186 @@ test('dashboard can move a session to another group and rename groups without to
   assert.equal(data.list().agents[0].movedTo, undefined); assert.deepEqual(data.list().groupNames, {});
   assert.throws(() => data.move(a.id, ''), /Invalid group/);
   assert.equal(fs.readFileSync(path.join(manager.storage.root, a.id, 'agent.json'), 'utf8'), record);
+});
+
+async function freePort() {
+  return await new Promise((resolve, reject) => {
+    const server = net.createServer();
+    server.on('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(error => error ? reject(error) : resolve(port));
+    });
+  });
+}
+
+test('concurrent ensureDashboard calls share one healthy viewer via lock and include scriptPath', async t => {
+  const { manager } = await setup(t);
+  const root = path.join(manager.storage.root, 'launcher-test');
+  const port = await freePort();
+  const prevPort = process.env.PI_DASHBOARD_PORT;
+  process.env.PI_DASHBOARD_PORT = String(port);
+  let launchedPid = null;
+  t.after(() => {
+    if (prevPort === undefined) delete process.env.PI_DASHBOARD_PORT;
+    else process.env.PI_DASHBOARD_PORT = prevPort;
+    if (launchedPid) {
+      try { process.kill(launchedPid, 'SIGTERM'); }
+      catch (error) { if (error?.code !== 'ESRCH') throw error; }
+    }
+  });
+  const [first, second] = await Promise.all([ensureDashboard(root), ensureDashboard(root)]);
+  launchedPid = first.pid;
+  assert.equal(first.pid, second.pid);
+  assert.equal(first.url, second.url);
+  assert.ok(first.scriptPath.endsWith(path.join('src', 'dashboard.js')));
+  assert.equal(fs.existsSync(path.join(root, 'dashboard.lock')), false);
+  const health = await (await fetch(new URL('/api/health', first.url), {
+    headers: { authorization: `Bearer ${first.token}` },
+  })).json();
+  assert.equal(health.service, 'pi-dashboard');
+  assert.equal(health.pid, first.pid);
+});
+
+test('dashboard SSE /api/events pushes initial state and subsequent settled agent updates', async t => {
+  const { manager, cwd } = await setup(t);
+  const dashboard = await startDashboard({ root: manager.storage.root, port: 0, token: 'sse-secret' });
+  t.after(() => dashboard.close());
+  const origin = new URL(dashboard.url).origin;
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+
+  const res = await fetch(origin + '/api/events', {
+    headers: { authorization: 'Bearer sse-secret' },
+    signal: controller.signal,
+  });
+  assert.equal(res.status, 200);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  const nextEvent = async () => {
+    for (;;) {
+      const idx = buffer.indexOf('\n\n');
+      if (idx !== -1) {
+        const chunk = buffer.slice(0, idx);
+        buffer = buffer.slice(idx + 2);
+        const line = chunk.split('\n').find(l => l.startsWith('data: '));
+        if (line) return JSON.parse(line.slice(6));
+      }
+      const { value, done } = await reader.read();
+      if (done) throw new Error('SSE stream ended unexpectedly');
+      buffer += decoder.decode(value, { stream: true });
+    }
+  };
+
+  const initial = await nextEvent();
+  assert.deepEqual(initial.agents, []);
+  const a = await spawn(manager, cwd);
+  await settled(manager, a.id);
+
+  let updated = null;
+  for (let i = 0; i < 6; i++) {
+    const candidate = await nextEvent();
+    if (candidate.agents.some(item => item.id === a.id && item.status === 'completed')) {
+      updated = candidate;
+      break;
+    }
+  }
+  assert.ok(updated);
+});
+
+test('dashboard /api/system, cached /api/quota and modular JS routes work safely', async t => {
+  const { manager, cwd } = await setup(t);
+  const a = await spawn(manager, cwd);
+  await settled(manager, a.id);
+  let quotaCalls = 0;
+  const dashboard = await startDashboard({
+    root: manager.storage.root,
+    port: 0,
+    token: 'sys-secret',
+    fetchQuota: async () => {
+      quotaCalls++;
+      return {
+        queriedAt: new Date().toISOString(),
+        results: [{ provider: 'zhipu', status: 'ok', quota: { plan: 'pro', windows: [] } }],
+        unsupportedProviders: [],
+      };
+    },
+  });
+  t.after(() => dashboard.close());
+  const origin = new URL(dashboard.url).origin;
+  const headers = { authorization: 'Bearer sys-secret' };
+
+  const sys = await (await fetch(origin + '/api/system', { headers })).json();
+  assert.equal(sys.dashboardPid, process.pid);
+  assert.equal(sys.counts.completed, 1);
+  assert.equal(typeof sys.modelCount, 'number');
+  assert.ok(Array.isArray(sys.watchers));
+
+  const q1 = await (await fetch(origin + '/api/quota', { headers })).json();
+  const q2 = await (await fetch(origin + '/api/quota', { headers })).json();
+  assert.equal(quotaCalls, 1);
+  assert.equal(q1.cached, false);
+  assert.equal(q2.cached, true);
+  const q3 = await (await fetch(origin + '/api/quota?refresh=1', { headers })).json();
+  assert.equal(quotaCalls, 2);
+  assert.equal(q3.cached, false);
+
+  for (const asset of ['/dom.js', '/panels.js', '/dialogs.js', '/sidebar.js', '/conversation.js', '/charts.js', '/app.js', '/style.css']) {
+    const assetRes = await fetch(origin + asset);
+    assert.equal(assetRes.status, 200);
+  }
+});
+
+test('DashboardData snapshot includes Antigravity parentInfo, callback cursor and active watcher flag', async t => {
+  const { manager, cwd } = await setup(t);
+  const a = await spawn(manager, cwd, 'done', { parentInfo: { kind: 'antigravity', sessionId: 'conv-snap' } });
+  await settled(manager, a.id);
+  const root = manager.storage.root;
+  fs.mkdirSync(path.join(root, 'callbacks'), { recursive: true });
+  fs.writeFileSync(path.join(root, 'callbacks', `${a.id}.json`), JSON.stringify({
+    agentId: a.id,
+    enabled: true,
+    host: 'antigravity',
+    antigravitySessionId: 'conv-snap',
+    antigravityDeliveredSeq: 4,
+    lastObservedBy: 'wait-events',
+  }));
+  const watchersDir = path.join(root, 'watchers');
+  fs.mkdirSync(watchersDir, { recursive: true });
+  const watcherFile = path.join(watchersDir, 'conv-snap-live.json');
+  fs.writeFileSync(watcherFile, JSON.stringify({ pid: process.pid, sessionId: 'conv-snap', agentIds: [], startedAt: new Date().toISOString() }));
+
+  const data = new DashboardData(root);
+  const liveSnap = data.snapshot(a.id);
+  assert.equal(liveSnap.parentInfo.kind, 'antigravity');
+  assert.equal(liveSnap.parentInfo.sessionId, 'conv-snap');
+  assert.equal(liveSnap.callback.antigravityDeliveredSeq, 4);
+  assert.equal(liveSnap.watcherActive, true);
+
+  fs.unlinkSync(watcherFile);
+  assert.equal(data.snapshot(a.id).watcherActive, false);
+});
+
+test('module line limits and zero-comment hygiene hold across refactored files', () => {
+  for (const dir of ['src', 'scripts', 'dashboard']) {
+    for (const file of fs.readdirSync(dir).filter(name => name.endsWith('.js'))) {
+      const lines = fs.readFileSync(path.join(dir, file), 'utf8').split('\n');
+      assert.ok(lines.length < 500, `${dir}/${file} exceeds 500 lines (${lines.length})`);
+      if (dir === 'dashboard') {
+        assert.ok(lines.length < 450, `${dir}/${file} exceeds 450 lines (${lines.length})`);
+      }
+    }
+  }
+  const cleanFiles = [
+    ...fs.readdirSync('dashboard').filter(name => name.endsWith('.js')).map(name => path.join('dashboard', name)),
+    'src/dashboard.js',
+    'src/dashboard-launcher.js',
+  ];
+  for (const file of cleanFiles) {
+    const lines = fs.readFileSync(file, 'utf8').split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      assert.equal(/^\s*(\/\/|\/\*|\*\/)/.test(lines[i]), false, `Unexpected comment in ${file}:${i + 1}`);
+    }
+  }
 });

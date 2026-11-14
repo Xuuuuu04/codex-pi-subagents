@@ -175,7 +175,50 @@ export class DashboardData {
       return this.catalogCache.value;
     } catch { return []; }
   }
-  snapshot(id) {
+  activeWatchers() {
+    const dir = path.join(this.root, 'watchers');
+    let files;
+    try { files = fs.readdirSync(dir).filter(name => name.endsWith('.json')); }
+    catch (error) {
+      if (error?.code === 'ENOENT') return [];
+      throw error;
+    }
+    const watchers = [];
+    for (const file of files) {
+      try {
+        const raw = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+        if (!Number.isInteger(raw?.pid) || !processAlive(raw.pid)) continue;
+        watchers.push({
+          pid: raw.pid,
+          sessionId: raw.sessionId || null,
+          agentIds: Array.isArray(raw.agentIds) ? raw.agentIds : [],
+          startedAt: raw.startedAt || null,
+        });
+      } catch (error) {
+        if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+      }
+    }
+    return watchers;
+  }
+  callbackInfo(id) {
+    const file = path.join(this.root, 'callbacks', `${id}.json`);
+    try {
+      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return {
+        host: raw.host || null,
+        enabled: !!raw.enabled,
+        antigravitySessionId: raw.antigravitySessionId || null,
+        antigravityDeliveredSeq: raw.antigravityDeliveredSeq || 0,
+        claudeSessionId: raw.claudeSessionId || null,
+        codexThreadId: raw.codexThreadId || null,
+        lastObservedBy: raw.lastObservedBy || null,
+      };
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error instanceof SyntaxError) return null;
+      throw error;
+    }
+  }
+  snapshot(id, watchers = null) {
     const directory = this.directory(id);
     const record = JSON.parse(fs.readFileSync(path.join(directory, 'agent.json'), 'utf8'));
     let controllerAlive = false;
@@ -196,7 +239,18 @@ export class DashboardData {
     if (marked) status = mark.status;
     const questionIds = new Set(record.questionIds || []);
     const activity = summarizeActivity(events);
-    return { id, name: record.name, status, recordedStatus: record.status, controllerAlive, marked, movedTo: mark.group, parentId: record.parentId, contextWindow: this.contextWindow(record.model), parentInfo: record.parentInfo,
+    const callback = this.callbackInfo(id);
+    const parentInfo = record.parentInfo || (callback?.antigravitySessionId
+      ? { kind: 'antigravity', sessionId: callback.antigravitySessionId, cwd: record.workspace?.sourceCwd || record.workspace?.cwd }
+      : undefined);
+    const activeWatcherList = watchers ?? this.activeWatchers();
+    const watcherActive = activeWatcherList.some(w =>
+      w.agentIds.includes(id)
+      || (parentInfo?.sessionId && w.sessionId === parentInfo.sessionId)
+      || (callback?.antigravitySessionId && w.sessionId === callback.antigravitySessionId)
+    );
+    return { id, name: record.name, status, recordedStatus: record.status, controllerAlive, marked, movedTo: mark.group, parentId: record.parentId, contextWindow: this.contextWindow(record.model), parentInfo,
+      callback, watcherActive,
       model: record.model, thinking: record.thinking, temporaryModel: record.restoreModel,
       cwd: record.workspace?.cwd, sourceCwd: record.workspace?.sourceCwd, workspaceMode: record.workspace?.mode,
       ownedPaths: record.ownedPaths, createdAt: record.createdAt, updatedAt: record.updatedAt,
@@ -235,13 +289,43 @@ export class DashboardData {
   }
   list() {
     if (!fs.existsSync(this.root)) return { agents: [], errors: [], refreshedAt: new Date().toISOString() };
+    const watchers = this.activeWatchers();
     const agents = []; const errors = [];
     for (const id of fs.readdirSync(this.root).filter(isAgentId)) {
-      try { const { events, ...agent } = this.snapshot(id); if (working.has(agent.status)) agent.speed = this.latestSpeed(id); agents.push(agent); }
+      try { const { events, ...agent } = this.snapshot(id, watchers); if (working.has(agent.status)) agent.speed = this.latestSpeed(id); agents.push(agent); }
       catch (error) { errors.push({ id, error: error.message }); }
     }
     agents.sort((a, b) => (b.updatedAt || b.createdAt || '').localeCompare(a.updatedAt || a.createdAt || ''));
     return { agents, errors, groupNames: Object.fromEntries(Object.entries(this.marks().groups).map(([key, value]) => [key, value.name])), refreshedAt: new Date().toISOString() };
+  }
+  systemStatus() {
+    let controller = null;
+    try {
+      const raw = JSON.parse(fs.readFileSync(path.join(this.root, 'controller.json'), 'utf8'));
+      controller = {
+        pid: raw.pid || null,
+        alive: Number.isInteger(raw?.pid) ? processAlive(raw.pid) : false,
+        startedAt: raw.startedAt || null,
+        version: raw.version || null,
+        scriptPath: raw.scriptPath || null,
+      };
+    } catch (error) {
+      if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
+    }
+    const watchers = this.activeWatchers();
+    const listed = this.list();
+    const counts = { total: listed.agents.length, working: 0, waiting: 0, idle: 0, completed: 0, failed: 0, closed: 0, disconnected: 0, stopped: 0, errors: listed.errors.length };
+    for (const agent of listed.agents) {
+      if (['starting', 'running', 'finishing'].includes(agent.status)) counts.working++;
+      else if (agent.status === 'waiting') counts.waiting++;
+      else if (agent.status === 'idle') counts.idle++;
+      else if (agent.status === 'completed') counts.completed++;
+      else if (agent.status === 'failed') counts.failed++;
+      else if (agent.status === 'closed') counts.closed++;
+      else if (agent.status === 'disconnected') counts.disconnected++;
+      else if (agent.status === 'stopped') counts.stopped++;
+    }
+    return { controller, modelCount: this.catalog().length, watchers, counts, dashboardPid: process.pid, refreshedAt: new Date().toISOString() };
   }
   contextWindow(model) { return this.catalog().find(m => m.provider === model?.provider && m.model === model?.model)?.contextWindow; }
   detail(id) {

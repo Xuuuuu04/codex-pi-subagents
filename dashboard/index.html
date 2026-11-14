@@ -1,106 +1,121 @@
 <!doctype html>
 <html lang="zh-CN">
 <head>
-  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Pi 调度台</title>
-  <link rel="stylesheet" href="/style.css"><script src="/conversation.js" defer></script><script src="/charts.js" defer></script><script src="/app.js" defer></script>
+  <link rel="stylesheet" href="/style.css">
+  <script type="module" src="/app.js"></script>
 </head>
 <body>
   <div class="app" id="app">
-    <aside class="side" id="side" aria-label="会话列表">
+    <aside class="side" id="side" aria-label="子代理列表">
       <div class="side-top">
         <div class="brand">
-          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true"><circle cx="16" cy="16" r="12.5" class="ring"/><circle cx="16" cy="16" r="3.6" class="core"/><circle cx="16" cy="3.5" r="2.4" class="orbit"/></svg>
+          <svg class="mark" viewBox="0 0 32 32" aria-hidden="true">
+            <circle cx="16" cy="16" r="12.5" class="ring"/>
+            <circle cx="16" cy="16" r="3.6" class="core"/>
+            <circle cx="16" cy="3.5" r="2.4" class="orbit"/>
+          </svg>
           <span class="brand-name">Pi 调度台</span>
-          <span class="live" id="live" role="status" title="正在连接"><i></i></span>
+          <span id="connection" class="conn-pill conn-poll">连接中</span>
         </div>
-        <button type="button" class="icon-btn" id="side-collapse" title="收起侧栏"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M9.5 4.5v15"/></svg></button>
       </div>
+
       <label class="search">
         <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6"/><path d="m15.5 15.5 4 4"/></svg>
-        <input id="search" type="search" placeholder="搜索会话、模型或目录" aria-label="搜索会话"><kbd>/</kbd>
+        <input id="search" type="search" placeholder="搜索名称、会话、模型或路径" aria-label="搜索子代理">
+        <kbd>/</kbd>
       </label>
-      <div class="chips" id="chips" role="group" aria-label="按状态筛选"></div>
-      <nav class="list" id="list"></nav>
-      <p class="list-empty" id="empty" hidden></p>
+
+      <div class="chip-bar" id="host-chips" role="group" aria-label="按宿主筛选"></div>
+      <div class="chip-bar" id="chips" role="group" aria-label="按状态筛选"></div>
+
+      <nav class="list" id="list" aria-label="分组会话"></nav>
+
       <div class="side-foot">
-        <div class="dist" id="dist" role="img" aria-label="会话状态分布"></div>
+        <div class="dist" id="dist" aria-label="会话状态分布"></div>
         <div class="totals" id="totals"></div>
         <div class="side-actions">
-          <span id="connection">正在连接</span>
-          <button type="button" class="icon-btn" id="notify" title="状态变化时提醒" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M6.5 16v-4.5a5.5 5.5 0 1 1 11 0V16l1.5 2h-14zM10 20.5a2 2 0 0 0 4 0"/></svg></button>
-          <button type="button" class="icon-btn" id="theme" title="切换深浅色"><svg viewBox="0 0 24 24"><path d="M19.5 14.5A7.5 7.5 0 1 1 9.5 4.5a6 6 0 0 0 10 10z"/></svg></button>
-          <button type="button" class="icon-btn" id="pause" title="暂停更新（P）" aria-pressed="false"><svg viewBox="0 0 24 24"><path d="M9 6.5v11M15 6.5v11"/></svg></button>
+          <button type="button" class="btn btn-xs" id="sys-btn">运行状态与额度</button>
+          <button type="button" class="btn btn-xs" id="notify" title="等待答复时发送桌面通知">通知</button>
+          <button type="button" class="btn btn-xs" id="theme" title="切换深浅色主题">深色</button>
+          <button type="button" class="btn btn-xs" id="pause" title="暂停实时更新 (P)">暂停</button>
+          <button type="button" class="btn btn-xs" id="help-btn" title="快捷键与说明 (?)">?</button>
         </div>
       </div>
     </aside>
+
     <div class="resizer" data-resize="side" role="separator" aria-orientation="vertical" aria-label="调整左侧栏宽度" tabindex="0"></div>
 
     <main class="main">
       <header class="main-head">
-        <button type="button" class="icon-btn" id="side-open" title="展开侧栏"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M9.5 4.5v15"/></svg></button>
-        <div class="title-line"><span class="dot" id="d-dot"></span><h2 id="d-name">Pi 调度台</h2><span class="d-model" id="d-model"></span></div>
-        <nav class="seg" id="views" role="tablist" aria-label="查看方式">
-          <i class="seg-thumb" aria-hidden="true"></i>
-          <button type="button" role="tab" data-tab="messages">对话</button>
-          <button type="button" role="tab" data-tab="tools">工具</button>
-          <button type="button" role="tab" data-tab="events">事件</button>
-          <button type="button" role="tab" data-tab="result">结果</button>
-          <button type="button" role="tab" data-tab="info">信息</button>
-        </nav>
-        <button type="button" class="icon-btn" id="panel-toggle" title="显示 / 隐藏右侧面板"><svg viewBox="0 0 24 24"><rect x="3.5" y="4.5" width="17" height="15" rx="3"/><path d="M14.5 4.5v15"/></svg></button>
+        <button type="button" class="btn btn-xs" id="side-toggle" title="展开/收起侧栏">列表</button>
+        <div class="views" id="views"></div>
+        <label class="thread-search-box">
+          <input id="thread-search" type="search" placeholder="在当前对话内搜索…" aria-label="对话内搜索">
+          <span class="thread-count muted" id="thread-count"></span>
+        </label>
+        <button type="button" class="btn btn-xs" id="panel-toggle" title="显示/隐藏右侧详情">详情</button>
       </header>
-      <div id="error" class="banner" role="alert" hidden></div>
-      <section class="thread" aria-label="会话内容">
-        <div class="scroller" id="scroller">
-          <div class="column">
-            <div class="placeholder" id="placeholder">
-              <svg viewBox="0 0 120 80" aria-hidden="true"><path d="M8 62h104" class="axis"/><path d="M14 54C26 50 30 40 44 44s18-20 32-16 16-14 30-18" class="trace"/><circle cx="106" cy="10" r="3.5" class="pdot"/></svg>
-              <p id="placeholder-text">正在读取本机会话</p>
-            </div>
-            <div id="records"></div>
-            <p class="note" id="record-note"></p>
-          </div>
-        </div>
-        <div class="dock" id="dock" hidden>
-          <button type="button" class="jump" id="jump" hidden><svg viewBox="0 0 24 24"><path d="M12 5v14M6 13l6 6 6-6"/></svg></button>
-          <div class="dock-alerts" id="d-alerts"></div>
-          <div class="dock-bar" id="d-now"></div>
-        </div>
+
+      <div class="dock" id="dock">
+        <div class="dock-alerts" id="d-alerts" hidden></div>
+        <div class="dock-now" id="d-now"></div>
+      </div>
+
+      <div class="pr-bar" id="thread-prs"></div>
+
+      <section class="thread" aria-label="子代理对话与工具输出">
+        <div class="records" id="records"></div>
       </section>
     </main>
 
-    <div class="resizer" data-resize="panel" role="separator" aria-orientation="vertical" aria-label="调整右侧面板宽度" tabindex="0"></div>
-    <aside class="panel" id="panel" aria-label="会话概况">
+    <div class="resizer" data-resize="panel" role="separator" aria-orientation="vertical" aria-label="调整右侧详情宽度" tabindex="0"></div>
+
+    <aside class="panel" id="panel" aria-label="子代理详情">
       <header class="panel-head">
-        <nav class="seg small" id="ptabs" role="tablist" aria-label="面板内容">
-          <i class="seg-thumb" aria-hidden="true"></i>
-          <button type="button" role="tab" data-ptab="overview">概况</button>
-          <button type="button" role="tab" data-ptab="context">上下文</button>
-          <button type="button" role="tab" data-ptab="changes">改动<span class="badge" id="changes-badge" hidden></span></button>
+        <nav class="ptabs" id="ptabs" role="tablist" aria-label="详情标签页">
+          <button type="button" role="tab" data-tab="status" class="active">状态</button>
+          <button type="button" role="tab" data-tab="speed">速度</button>
+          <button type="button" role="tab" data-tab="lane">工具轨</button>
+          <button type="button" role="tab" data-tab="context">上下文</button>
+          <button type="button" role="tab" data-tab="changes">改动</button>
         </nav>
-        <button type="button" class="icon-btn" id="panel-close" title="收起面板"><svg viewBox="0 0 24 24"><path d="M7 7l10 10M17 7 7 17"/></svg></button>
       </header>
-      <div class="panel-body" id="panel-body">
-        <div class="pview" data-pview="overview">
-          <section class="card status-card" id="p-status"></section>
-          <section class="card"><header class="card-head"><h3>实时速度</h3><span class="card-meta" id="speed-meta"></span></header><div id="p-speed"></div></section>
-          <section class="card"><header class="card-head"><h3>时间线</h3><span class="card-meta" id="axis-mid"></span></header>
-            <div class="lane-wrap" id="lane-wrap"><svg id="lane" role="img" aria-label="会话时间线"></svg></div>
-            <div class="axis-labels"><span id="axis-start"></span><span id="axis-end"></span></div>
-            <div class="legend"><span class="k-tool">工具</span><span class="k-err">失败</span><span class="k-comm">通信</span><span class="k-life">阶段</span></div>
-          </section>
-          <section class="card"><header class="card-head"><h3>用量</h3></header><dl class="figures" id="d-figures"></dl></section>
-          <section class="card" id="d-report" hidden><header class="card-head"><h3>最近报告</h3></header><div class="p-report"></div></section>
-        </div>
-        <div class="pview" data-pview="context" hidden><div id="p-context"></div></div>
-        <div class="pview" data-pview="changes" hidden><div id="p-changes"></div></div>
+      <div class="panel-body">
+        <div id="p-status"></div>
+        <div id="p-speed" hidden></div>
+        <div id="lane" hidden></div>
+        <div id="p-context" hidden></div>
+        <div id="p-changes" hidden></div>
       </div>
     </aside>
   </div>
+
   <div class="chart-tip" id="chart-tip" hidden></div>
   <div class="menu" id="menu" role="menu" hidden></div>
-  <dialog class="dialog" id="dialog"><form method="dialog"><h3 id="dialog-title"></h3><input id="dialog-input" autocomplete="off" maxlength="60"><p class="dialog-hint" id="dialog-hint"></p><div class="dialog-actions"><button value="cancel" class="btn ghost">取消</button><button value="ok" class="btn primary" id="dialog-ok">确定</button></div></form></dialog>
-  <div class="toast" id="toast" role="status" hidden></div>
+  <dialog class="dialog" id="dialog"></dialog>
+  <dialog class="dialog" id="sys-dialog"></dialog>
+  <dialog class="dialog" id="help-dialog">
+    <div class="dialog-box">
+      <div class="dialog-head">
+        <strong>快捷键与使用说明</strong>
+        <button type="button" class="btn btn-xs" data-close>关闭</button>
+      </div>
+      <div class="dialog-body">
+        <div class="shortcut-list">
+          <div class="kv-row"><span><kbd>/</kbd></span><span>聚焦左侧搜索框</span></div>
+          <div class="kv-row"><span><kbd>j</kbd> / <kbd>k</kbd></span><span>切换下一条 / 上一条子代理</span></div>
+          <div class="kv-row"><span><kbd>[</kbd> / <kbd>]</kbd></span><span>切换右侧详情标签页</span></div>
+          <div class="kv-row"><span><kbd>p</kbd></span><span>暂停或恢复实时推送</span></div>
+          <div class="kv-row"><span><kbd>?</kbd></span><span>打开或关闭本说明窗口</span></div>
+          <div class="kv-row"><span><kbd>Esc</kbd></span><span>关闭弹窗、菜单或清空聚焦搜索</span></div>
+        </div>
+        <p class="muted help-note">面板只读查看本机记录；手动标记与分组整理仅保存在面板自有配置文件中，不停止或接管任何运行中的子代理。</p>
+      </div>
+    </div>
+  </dialog>
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
 </body>
 </html>
