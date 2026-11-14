@@ -4,7 +4,10 @@ function textValue(value) {
   if (value == null) return '';
   if (typeof value === 'string') return value;
   try { return JSON.stringify(value, null, 2); }
-  catch (error) { return error ? String(value) : ''; }
+  catch (error) {
+    void error;
+    return String(value);
+  }
 }
 
 export function pairMessages(messages = []) {
@@ -112,8 +115,12 @@ function createMessageCard(item, agent) {
 }
 
 function updateMessageCard(node, item, agent) {
-  if (node.dataset.digest === item._digest && (!item.calls?.some(c => c.name === 'ask_parent'))) return;
-  node.dataset.digest = item._digest;
+  const qDigest = item.calls?.some(c => c.name === 'ask_parent')
+    ? JSON.stringify((agent?.questions || []).map(q => q.questionId))
+    : '';
+  const digest = `${item._digest}:${qDigest}`;
+  if (node.dataset.digest === digest) return;
+  node.dataset.digest = digest;
   const roleLabel = item.role === 'user' ? '任务指令' : item.role === 'assistant' ? '子代理' : item.role === 'toolResult' ? `工具 · ${item.toolName || ''}` : item.role;
   const children = [
     el('header', { className: 'msg-head' },
@@ -194,19 +201,26 @@ export function renderThread(container, detail, searchQuery = '') {
   const prBar = document.getElementById('thread-prs');
   if (!detail) {
     if (countNode) countNode.textContent = '';
-    if (prBar) prBar.replaceChildren();
+    if (prBar) {
+      delete prBar.dataset.digest;
+      prBar.replaceChildren();
+    }
     container.replaceChildren(el('div', { className: 'empty-main' }, '从左侧选择一个子代理查看完整对话与工具记录'));
     return;
   }
 
   if (prBar) {
-    const links = (detail.pullRequests || []).map(pr => {
-      const href = safeHref(pr.url || pr);
-      if (!href) return null;
-      const hint = pr.merged ? '已合并' : pr.created ? '已创建' : 'PR';
-      return el('a', { href, target: '_blank', rel: 'noopener noreferrer', className: 'pr-pill' }, `${hint} · ${href.replace(/^https?:\/\//, '')}`);
-    }).filter(Boolean);
-    prBar.replaceChildren(...links);
+    const prDigest = JSON.stringify(detail.pullRequests || []);
+    if (prBar.dataset.digest !== prDigest) {
+      prBar.dataset.digest = prDigest;
+      const links = (detail.pullRequests || []).map(pr => {
+        const href = safeHref(pr.url || pr);
+        if (!href) return null;
+        const hint = pr.merged ? '已合并' : pr.created ? '已创建' : 'PR';
+        return el('a', { href, target: '_blank', rel: 'noopener noreferrer', className: 'pr-pill' }, `${hint} · ${href.replace(/^https?:\/\//, '')}`);
+      }).filter(Boolean);
+      prBar.replaceChildren(...links);
+    }
   }
 
   const paired = pairMessages(detail.messages || []);

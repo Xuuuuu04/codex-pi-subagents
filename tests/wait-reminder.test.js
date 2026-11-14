@@ -7,7 +7,7 @@ test('启动提醒要求结束本轮前必须等待，并给出 Claude Code 唤�
   const note = spawnReminder('11111111-1111-4111-8111-111111111111');
   assert.match(note.rule, /wait_agent/);
   assert.match(note.next, /11111111-1111-4111-8111-111111111111/);
-  assert.match(note.claudeCode, /wait-events\.js --agent 11111111/);
+  assert.match(note.claudeCode, /wait-events\.js"? --agent 11111111/);
 });
 
 test('等待返回里列出仍在工作和等待答复的代理，全部结束则不加提醒', () => {

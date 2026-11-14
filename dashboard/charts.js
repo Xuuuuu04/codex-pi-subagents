@@ -194,6 +194,10 @@ export function renderContextChart(container, context) {
 }
 
 export function renderToolLane(container, events = []) {
+  const lastEv = events.at(-1);
+  const digest = JSON.stringify([events.length, lastEv?.sequence, lastEv?.type, lastEv?.toolCallId, lastEv?.isError]);
+  if (container.dataset.digest === digest && container.childElementCount > 0) return;
+  container.dataset.digest = digest;
   container.replaceChildren();
   const runs = [];
   const byId = new Map();

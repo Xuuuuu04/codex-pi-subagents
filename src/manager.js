@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import { PiProcess } from './rpc-client.js';
 import { LiveStream } from './live-stream.js';
-import { Storage, processAlive } from './storage.js';
+import { Storage, processAlive, atomicWriteJson, readJsonSafe, ownerLockAlive } from './storage.js';
 import { normalizeParentInfo } from './controller-client.js';
 import { MessageChannel } from './messages.js';
 import { MessageStore } from './message-store.js';
@@ -77,8 +77,11 @@ export class Manager extends EventEmitter {
         const rpc = this.processFactory({ executable: this.executable, args: ['--mode', 'rpc', '--no-session', '--offline', '--no-extensions'], cwd: this.storage.root });
         try {
           const models = (await rpc.command('get_available_models')).models;
-          // 面板据此显示上下文窗口；只写公开的模型目录字段，不含任何凭据。
-          try { fs.writeFileSync(path.join(this.storage.root, 'models-catalog.json'), JSON.stringify(models.map(m => ({ provider: m.provider, model: m.id, name: m.name, contextWindow: m.contextWindow, maxTokens: m.maxTokens })))); } catch {}
+          try {
+            atomicWriteJson(path.join(this.storage.root, 'models-catalog.json'), models.map(m => ({ provider: m.provider, model: m.id, name: m.name, contextWindow: m.contextWindow, maxTokens: m.maxTokens })));
+          } catch (error) {
+            if (error?.code !== 'ENOENT') process.stderr.write(`Catalog write failed: ${error.message}\n`);
+          }
           return models;
         }
         finally { await rpc.close(); }
@@ -93,10 +96,10 @@ export class Manager extends EventEmitter {
   claim(record) {
     const lock = path.join(this.storage.directory(record.id), 'owner.lock');
     fs.mkdirSync(path.dirname(lock), { recursive: true, mode: 0o700 });
+    const previous = readJsonSafe(lock);
     if (fs.existsSync(lock)) {
-      const previous = JSON.parse(fs.readFileSync(lock, 'utf8'));
-      if (processAlive(previous.pid)) throw new Error('Saved agent is already controlled by a live process');
-      fs.unlinkSync(lock);
+      if (previous && processAlive(previous.pid)) throw new Error('Saved agent is already controlled by a live process');
+      try { fs.unlinkSync(lock); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
     }
     if (record.piPid && processAlive(record.piPid)) throw new Error('Saved Pi process is still alive after its controller disconnected; stop it before recovering, to avoid duplicate work');
     const fd = fs.openSync(lock, 'wx', 0o600);
@@ -114,7 +117,7 @@ export class Manager extends EventEmitter {
         if (a.record.workspace?.mode === 'shared' && a.rpc && !a.rpc.exited && pathsOverlap(paths.map(p => canonicalPath(path.resolve(original, p))), a.record.ownedPaths.map(p => canonicalPath(path.resolve(a.record.workspace.sourceCwd, p))))) throw new Error('Owned paths overlap another live agent in the shared directory');
       }
       for (const saved of this.storage.all()) {
-        if (this.agents.has(saved.id) || saved.workspace?.mode !== 'shared' || !processAlive(saved.ownerPid) || !fs.existsSync(path.join(this.storage.directory(saved.id), 'owner.lock'))) continue;
+        if (this.agents.has(saved.id) || saved.workspace?.mode !== 'shared' || !ownerLockAlive(this.storage.directory(saved.id))) continue;
         if (pathsOverlap(paths.map(p => canonicalPath(path.resolve(original, p))), saved.ownedPaths.map(p => canonicalPath(path.resolve(saved.workspace.cwd, p))))) throw new Error('Owned paths overlap a live agent from an earlier controller');
       }
     }
@@ -139,9 +142,10 @@ export class Manager extends EventEmitter {
     }
   }
   release(lock) {
-    if (!fs.existsSync(lock)) return;
-    const value = JSON.parse(fs.readFileSync(lock, 'utf8'));
-    if (value.owner === this.owner) fs.unlinkSync(lock);
+    const value = readJsonSafe(lock);
+    if (value?.owner === this.owner) {
+      try { fs.unlinkSync(lock); } catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    }
   }
   async launch(agent) {
     const r = agent.record;
@@ -150,7 +154,7 @@ export class Manager extends EventEmitter {
     const tempDir = path.join(this.storage.directory(r.id), 'tool-tmp'); fs.mkdirSync(tempDir, { recursive: true, mode: 0o700 });
     const toolPolicy = { ...r.policy, cwd: r.workspace.cwd, ownedPaths: r.ownedPaths, stateRoot: this.storage.root, tempDir };
     if (!this.processFactory.testOnly) sandboxProfile(toolPolicy);
-    const policyFile = path.join(this.storage.directory(r.id), 'tool-policy.json'); fs.writeFileSync(policyFile, JSON.stringify(toolPolicy), { mode: 0o600 });
+    const policyFile = path.join(this.storage.directory(r.id), 'tool-policy.json'); atomicWriteJson(policyFile, toolPolicy);
     const instructions = `You are an external Pi subagent controlled by parent Codex. Your ID: ${r.id}.\nOwned paths: ${r.ownedPaths.join(', ')}. Do not edit siblings' files or revert others' changes. Your directory is ${r.workspace.cwd}. File tools and shell descendants are restricted to the assigned workspace and owned paths. Shell networking is disabled unless explicitly authorized.\nUse agent_message(recipient="parent", message=...) for important progress. Use ask_parent for unresolved blocking decisions; its tool result is the parent's answer. Finish with changed files, checks actually run, remaining issues. Never claim tests passed without running them. Do not deploy or send external messages without explicit parent authorization.\nProvided context:\n${r.context}`;
     const args = ['--mode', 'rpc', '--offline', '--provider', r.model.provider, '--model', r.model.model, '--thinking', r.thinking,
       '--no-extensions', '--extension', extension, '--extension', fileURLToPath(new URL('../extensions/policy.ts', import.meta.url)), '--append-system-prompt', instructions, '--session-dir', path.join(this.storage.directory(r.id), 'sessions')];
@@ -319,19 +323,18 @@ export class Manager extends EventEmitter {
     try { await this.launch(agent); this.event(agent, 'resumed'); return this.summary(agent); }
     catch (error) { record.status = 'failed'; record.error = error.message; this.storage.save(record); if (agent.rpc) await agent.rpc.close(); this.release(lock); throw error; }
   }
-  bindParentInfo(id, parent) {
+  bindParentInfo(id, parent, parentId) {
     const agent = this.get(id);
+    if (parentId && agent.record.parentId !== parentId) agent.record.parentId = parentId;
     const merged = normalizeParentInfo(parent, agent.record.parentInfo);
-    if (merged) {
-      agent.record.parentInfo = merged;
-      this.storage.save(agent.record);
-    }
+    if (merged) agent.record.parentInfo = merged;
+    if (parentId || merged) this.storage.save(agent.record);
     return this.summary(agent);
   }
   list(includeSaved = false) {
     const current = [...this.agents.values()].map(a => this.summary(a));
     if (!includeSaved) return current;
-    return [...current, ...this.storage.all().filter(r => !this.agents.has(r.id)).map(r => ({ ...this.summary({ record: r }), owned: false, controllerAlive: fs.existsSync(path.join(this.storage.directory(r.id), 'owner.lock')) && processAlive(r.ownerPid) }))];
+    return [...current, ...this.storage.all().filter(r => !this.agents.has(r.id)).map(r => ({ ...this.summary({ record: r }), owned: false, controllerAlive: ownerLockAlive(this.storage.directory(r.id)) }))];
   }
   read(id, afterSequence = 0, limit = 50) {
     const agent = this.get(id);

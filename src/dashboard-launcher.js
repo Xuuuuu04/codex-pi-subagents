@@ -2,8 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { atomicWriteJson, processAlive } from './storage.js';
-import { defaultDashboardPort } from './dashboard.js';
+import { atomicWriteJson, processAlive, readJsonSafe } from './storage.js';
+import { parseDashboardPort, readRunningDashboard } from './dashboard-data.js';
 
 export const defaultStateRoot = fileURLToPath(new URL('../.agents/runtime/', import.meta.url));
 const script = fileURLToPath(new URL('./dashboard.js', import.meta.url));
@@ -11,30 +11,7 @@ const maxLogBytes = 1024 * 1024;
 const keepLogBytes = 512 * 1024;
 
 export function dashboardInfo(root = defaultStateRoot) {
-  try { return JSON.parse(fs.readFileSync(path.join(root, 'dashboard.json'), 'utf8')); }
-  catch (error) {
-    if (error?.code === 'ENOENT' || error instanceof SyntaxError) return null;
-    throw error;
-  }
-}
-
-async function running(root) {
-  const info = dashboardInfo(root);
-  if (!info || !processAlive(info.pid)) return null;
-  const url = new URL(info.url);
-  if (url.hostname !== '127.0.0.1') throw new Error('Invalid local dashboard address');
-  try {
-    const response = await fetch(new URL('/api/health', url), {
-      headers: { authorization: `Bearer ${info.token || url.hash.slice(1)}` },
-      signal: AbortSignal.timeout(1500),
-    });
-    const health = await response.json();
-    if (!response.ok || health.service !== 'pi-dashboard' || health.pid !== info.pid) return null;
-    return { ...info, scriptPath: health.scriptPath || null };
-  } catch (error) {
-    if (error) return null;
-    return null;
-  }
+  return readJsonSafe(path.join(root, 'dashboard.json'));
 }
 
 function matchesTarget(info, port) {
@@ -114,8 +91,8 @@ async function retirePid(pid, waitForExit) {
 }
 
 export async function ensureDashboard(root = defaultStateRoot) {
-  const port = Number(process.env.PI_DASHBOARD_PORT || defaultDashboardPort);
-  const initial = await running(root);
+  const port = parseDashboardPort();
+  const initial = await readRunningDashboard(root);
   if (matchesTarget(initial, port)) return initial;
 
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
@@ -125,17 +102,17 @@ export async function ensureDashboard(root = defaultStateRoot) {
     release = tryAcquireLock(lockFile, port);
     if (release) break;
     await new Promise(resolve => setTimeout(resolve, 100));
-    const ready = await running(root);
+    const ready = await readRunningDashboard(root);
     if (matchesTarget(ready, port)) return ready;
   }
   if (!release) {
-    const ready = await running(root);
+    const ready = await readRunningDashboard(root);
     if (matchesTarget(ready, port)) return ready;
     throw new Error('Timed out waiting for dashboard launch lock');
   }
 
   try {
-    const previous = await running(root);
+    const previous = await readRunningDashboard(root);
     if (matchesTarget(previous, port)) return previous;
     const samePort = previous && Number(new URL(previous.url).port) === port;
     if (samePort) await retirePid(previous.pid, true);
@@ -154,7 +131,7 @@ export async function ensureDashboard(root = defaultStateRoot) {
     child.unref();
 
     for (let n = 0; n < 40; n++) {
-      const info = await running(root);
+      const info = await readRunningDashboard(root);
       if (info && info.pid !== previous?.pid && Number(new URL(info.url).port) === port) {
         if (previous && !samePort) await retirePid(previous.pid, false);
         atomicWriteJson(path.join(root, 'dashboard.json'), { ...info, updatedAt: new Date().toISOString() });

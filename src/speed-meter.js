@@ -1,6 +1,5 @@
-import fs from 'node:fs';
-import { randomUUID } from 'node:crypto';
 import { estimateTextTokens } from './token-estimate.js';
+import { atomicWriteJson } from './storage.js';
 
 export function estimateTokens(text = '') {
   return estimateTextTokens(text);
@@ -74,11 +73,10 @@ export class SpeedMeter {
     this.timer.unref?.();
   }
   flush() {
-    try {
-      const temporary = `${this.file}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
-      fs.writeFileSync(temporary, JSON.stringify(this.snapshot()), { mode: 0o600 });
-      fs.renameSync(temporary, this.file);
-    } catch {}
+    try { atomicWriteJson(this.file, this.snapshot()); }
+    catch (error) {
+      if (error?.code !== 'ENOENT') process.stderr.write(`SpeedMeter flush failed: ${error.message}\n`);
+    }
   }
   close() { clearTimeout(this.timer); this.timer = null; this.request = null; this.flush(); }
 }

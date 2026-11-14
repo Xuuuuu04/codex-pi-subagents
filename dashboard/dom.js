@@ -94,9 +94,20 @@ export function safeHref(raw) {
     const url = new URL(String(raw));
     return url.protocol === 'https:' || url.protocol === 'http:' ? url.href : null;
   } catch (error) {
-    if (error) return null;
-    return null;
+    if (error instanceof TypeError) return null;
+    throw error;
   }
+}
+
+export const isWorking = status => ['starting', 'running', 'finishing'].includes(status);
+
+export function totalUsageTokens(usage) {
+  if (!usage) return 0;
+  return (usage.input || 0) + (usage.output || 0) + (usage.cacheRead || 0) + (usage.cacheWrite || 0);
+}
+
+export function agentSessionId(agent) {
+  return agent?.parentInfo?.sessionId || agent?.callback?.antigravitySessionId || agent?.callback?.claudeSessionId || agent?.callback?.codexThreadId || null;
 }
 
 const statusLabels = {
@@ -109,15 +120,16 @@ const statusLabels = {
   failed: '已失败',
   closed: '已关闭',
   stopped: '已停止',
+  interrupted: '已中断',
   disconnected: '控制断开',
 };
 
 export const statusLabel = status => statusLabels[status] || status || '未知';
 
 export function statusGroup(status) {
-  if (['starting', 'running', 'finishing'].includes(status)) return 'working';
+  if (isWorking(status)) return 'working';
   if (status === 'waiting') return 'waiting';
-  if (['completed', 'closed', 'idle', 'stopped'].includes(status)) return 'done';
+  if (['completed', 'closed', 'idle', 'stopped', 'interrupted'].includes(status)) return 'done';
   if (['failed', 'disconnected'].includes(status)) return 'issue';
   return 'other';
 }
@@ -154,11 +166,35 @@ export async function copyText(text, label = '已复制') {
     showToast(`${label}：${String(text).slice(0, 36)}${String(text).length > 36 ? '…' : ''}`);
     return true;
   } catch (error) {
-    if (error) showToast('剪贴板写入被浏览器拒绝');
+    showToast(`剪贴板写入被浏览器拒绝${error?.name ? ` (${error.name})` : ''}`);
     return false;
   }
 }
 
-export function replyPayload(questionId, answer = '<填写答复内容>') {
-  return JSON.stringify({ questionId, answer }, null, 2);
+export function replyPayload(questionId, message = '<填写答复内容>') {
+  return JSON.stringify({ questionId, message }, null, 2);
+}
+
+export async function apiFetch(url, options = {}, retried = false) {
+  const headers = new Headers(options.headers || {});
+  if (options.method === 'POST') {
+    headers.set('content-type', 'application/json');
+    headers.set('x-pi-dashboard', '1');
+  }
+  const res = await fetch(url, { credentials: 'same-origin', ...options, headers });
+  if (res.status === 401 && !retried) {
+    await fetch('/', { credentials: 'same-origin' });
+    return apiFetch(url, options, true);
+  }
+  const raw = await res.text();
+  let json = {};
+  if (raw) {
+    try { json = JSON.parse(raw); }
+    catch (parseError) {
+      if (!res.ok) throw new Error(`HTTP ${res.status}: ${raw.slice(0, 120)}`);
+      throw new Error(`接口返回无效 JSON: ${parseError.message}`);
+    }
+  }
+  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
+  return json;
 }

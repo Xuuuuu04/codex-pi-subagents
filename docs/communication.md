@@ -1,6 +1,6 @@
 # 可靠通信与权限
 
-1.1.0 使用 MCP SDK 1.26.0，支持 MCP 2025-11-25 的资源订阅、日志、进度和实验性 Tasks。没有适用于所有代理系统的统一认证；协议兼容、实际行为检查和客户端能力分别记录。
+1.6.0 使用 MCP SDK 1.26.0，提供 22 个主会话工具（在原有 20 个工具基础上新增 `bind_session` 与 `get_subagent_health`），支持 MCP 2025-11-25 的资源订阅、日志、进度和实验性 Tasks。没有适用于所有代理系统的统一认证；协议兼容、实际行为检查和客户端能力分别记录。
 
 ## 消息与恢复
 
@@ -44,7 +44,7 @@ macOS Seatbelt 实际限制文件工具与 shell 后代：允许读取工作目�
 - Tasks 默认保存 24 小时，可申请 1 秒至 7 天，实际 TTL 返回给客户端。记录持久保存，过期记录定时删除或访问时删除。断线后通过 `resume_task` 显式接手，原连接的 progressToken 不继续使用。
 - 管理进程重启后未完成的标准任务显示失败并说明没有自动重做；保存的代理仍可显式恢复。
 - `get_client_capabilities` 返回当前连接实际声明的能力。2026-10-06 实测 Codex CLI 0.159.0 声明确认表单，没有声明 Tasks；普通创建/读取/等待可用。
-- 通知可以被客户端显示或处理，MCP 没有保证自动启动已结束模型回合的通用入口。1.2.0 增加宿主专用回调：Codex 用 `codex queue` 写入指定会话队列，Claude Code 用 channel 通知或后台 `wait-events` 命令。回调先记录游标再投递，失败只记录不重发；当前仍不承诺原生子代理界面或隐藏上下文复制。
+- 通知可以被客户端显示或处理，MCP 没有保证自动启动已结束模型回合的通用入口。1.2.0 增加宿主专用回调：Codex 用 `codex queue` 写入指定会话队列，Claude Code 用 channel 通知或后台 `wait-events` 命令。1.6.0 增加 Antigravity 会话绑定与双重唤醒：插件注册 `PreInvocation` 与 `Stop` 钩子，配合后台 `wait-events --session <id>` 写出 `watchers/<pid>.json` 活跃心跳，通过 `callbacks/<agentId>.json` 里的 `antigravityDeliveredSeq` 单调递增游标对钩子、`wait-events`、`read_agent` 和 `wait_agent` 统一去重（按事件子集监听时不会跳过未投递的默认事件）。回调先记录游标再投递，失败只记录不重发；当前仍不承诺原生子代理界面或隐藏上下文复制。
 
 ## 兼容升级
 

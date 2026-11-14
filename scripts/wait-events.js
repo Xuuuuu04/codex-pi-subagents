@@ -3,8 +3,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { Storage, atomicWriteJson } from '../src/storage.js';
-import { callbackEvents, callbackText } from '../src/callbacks.js';
+import { Storage, atomicWriteJson, readJsonSafe } from '../src/storage.js';
+import {
+  callbackEvents, callbackText, readCallbackRecord, sessionBoundAgentIds, scanAgentEvents,
+} from '../src/callbacks.js';
+import { assertSafeSessionId } from '../src/wait-reminder.js';
 
 const { values } = parseArgs({
   options: {
@@ -22,6 +25,12 @@ if (!values.agent?.length && !values.session) {
   console.error('Usage: wait-events.js (--agent <id> | --session <sessionId>) [--after <id>=<sequence>] [--events settled,question] [--timeout seconds] [--follow] [--json]');
   process.exit(64);
 }
+const sessionId = values.session ? assertSafeSessionId(values.session) : undefined;
+const timeoutSec = Number(values.timeout);
+if (!Number.isFinite(timeoutSec) || timeoutSec < 0) {
+  console.error('--timeout must be a non-negative number');
+  process.exit(64);
+}
 const events = values.events.split(',').filter(Boolean);
 if (!events.length || events.some(type => !callbackEvents.includes(type))) {
   console.error(`Events must be from: ${callbackEvents.join(', ')}`);
@@ -30,70 +39,31 @@ if (!events.length || events.some(type => !callbackEvents.includes(type))) {
 
 const root = path.resolve(process.env.PI_SUBAGENTS_STATE_DIR || fileURLToPath(new URL('../.agents/runtime', import.meta.url)));
 const storage = new Storage(root);
-const callbacksDir = path.join(root, 'callbacks');
 const watchersDir = path.join(root, 'watchers');
 const explicitOverrides = new Map();
 for (const item of values.after || []) {
-  const [id, sequence] = item.split('=');
-  if (id && Number.isFinite(Number(sequence))) explicitOverrides.set(id, Number(sequence));
-}
-
-function readCallback(id) {
-  const file = path.join(callbacksDir, `${id}.json`);
-  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
-  catch (error) {
-    if (error?.code === 'ENOENT' || error instanceof SyntaxError) return null;
-    throw error;
+  const sep = item.indexOf('=');
+  const id = sep > 0 ? item.slice(0, sep) : '';
+  const rawSeq = sep > 0 ? item.slice(sep + 1) : '';
+  const seq = Number(rawSeq);
+  if (!id || !rawSeq || !Number.isInteger(seq) || seq < 0) {
+    console.error(`Invalid --after value: ${item}`);
+    process.exit(64);
   }
-}
-
-function advanceDelivered(id, sequence) {
-  const file = path.join(callbacksDir, `${id}.json`);
-  const existing = readCallback(id);
-  if (!existing && !values.session) return;
-  const next = Math.max(existing?.antigravityDeliveredSeq || 0, sequence);
-  if (existing && next <= (existing.antigravityDeliveredSeq || 0)) return;
-  const updated = existing
-    ? { ...existing, antigravityDeliveredSeq: next, lastObservedBy: 'wait-events', updatedAt: new Date().toISOString() }
-    : {
-        agentId: id,
-        enabled: true,
-        events: ['settled', 'question', 'process_failed', 'budget_limit', 'control_failed'],
-        host: 'antigravity',
-        antigravitySessionId: values.session,
-        antigravityCliResume: false,
-        since: 0,
-        antigravityDeliveredSeq: next,
-        lastObservedBy: 'wait-events',
-        updatedAt: new Date().toISOString(),
-      };
-  atomicWriteJson(file, updated);
-}
-
-function sessionAgents() {
-  const found = new Set(values.agent || []);
-  if (!values.session) return [...found];
-  for (const record of storage.all()) {
-    if (record.parentInfo?.sessionId === values.session) found.add(record.id);
-  }
-  if (fs.existsSync(callbacksDir)) {
-    for (const file of fs.readdirSync(callbacksDir).filter(name => name.endsWith('.json'))) {
-      const id = file.slice(0, -5);
-      const cb = readCallback(id);
-      if (cb?.antigravitySessionId === values.session && fs.existsSync(path.join(root, id, 'agent.json'))) {
-        found.add(id);
-      }
-    }
-  }
-  return [...found];
+  explicitOverrides.set(id, seq);
 }
 
 const after = {};
 for (const id of values.agent || []) {
-  after[id] = explicitOverrides.has(id) ? explicitOverrides.get(id) : storage.load(id).sequence;
+  const record = readJsonSafe(path.join(storage.directory(id), 'agent.json'));
+  if (!record) {
+    console.error(`Agent not found: ${id}`);
+    process.exit(66);
+  }
+  after[id] = explicitOverrides.has(id) ? explicitOverrides.get(id) : record.sequence;
 }
 
-const key = String(values.session || values.agent?.[0] || 'watch').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 64);
+const key = String(sessionId || values.agent?.[0] || 'watch').replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 64);
 const watcherFile = path.join(watchersDir, `${key}-${process.pid}.json`);
 let watcherHandle = null;
 let cleaned = false;
@@ -112,7 +82,7 @@ function cleanup() {
 fs.mkdirSync(watchersDir, { recursive: true, mode: 0o700 });
 atomicWriteJson(watcherFile, {
   pid: process.pid,
-  sessionId: values.session || null,
+  sessionId: sessionId || null,
   agentIds: values.agent || [],
   startedAt: new Date().toISOString(),
 });
@@ -138,24 +108,27 @@ if (fs.existsSync(root)) {
   }
 }
 
-const deadline = Date.now() + Number(values.timeout) * 1000;
+const deadline = Date.now() + timeoutSec * 1000;
 for (;;) {
-  const targets = sessionAgents();
+  const targets = sessionId
+    ? sessionBoundAgentIds(storage, sessionId, { respectEnabled: true, extraIds: values.agent || [] })
+    : [...(values.agent || [])];
   let matched = 0;
   for (const id of targets) {
     if (after[id] === undefined) {
-      if (explicitOverrides.has(id)) after[id] = explicitOverrides.get(id);
-      else after[id] = readCallback(id)?.antigravityDeliveredSeq || 0;
+      after[id] = explicitOverrides.has(id) ? explicitOverrides.get(id) : (readCallbackRecord(root, id)?.antigravityDeliveredSeq || 0);
     }
-    let lastDelivered = 0;
-    for (const event of storage.events(id, after[id], 100)) {
-      after[id] = event.sequence;
-      if (!events.includes(event.type) || (event.type === 'message' && event.recipient !== 'parent')) continue;
+    const scanned = scanAgentEvents(storage, id, {
+      afterSequence: after[id],
+      eventTypes: events,
+      source: 'wait-events',
+      sessionId,
+    });
+    after[id] = scanned.cursor;
+    for (const event of scanned.matched) {
       console.log(values.json ? JSON.stringify(event) : `${callbackText(event)}\n`);
-      lastDelivered = event.sequence;
       matched++;
     }
-    if (lastDelivered) advanceDelivered(id, lastDelivered);
   }
   if (matched && !values.follow) {
     cleanup();
@@ -163,7 +136,7 @@ for (;;) {
   }
   const remaining = deadline - Date.now();
   if (remaining <= 0) {
-    const label = values.session ? `session ${values.session}` : values.agent.join(', ');
+    const label = sessionId ? `session ${sessionId}` : values.agent.join(', ');
     console.log(`No callback event within ${values.timeout}s for ${label}. Cursor: ${JSON.stringify(after)} (state ${path.basename(root)})`);
     cleanup();
     process.exit(values.follow ? 0 : 2);

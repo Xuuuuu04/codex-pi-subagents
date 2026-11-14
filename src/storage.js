@@ -3,6 +3,19 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { StringDecoder } from 'node:string_decoder';
 
+export function readJsonSafe(file, fallback = null) {
+  try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (error) {
+    if (error?.code === 'ENOENT' || error instanceof SyntaxError) return fallback;
+    throw error;
+  }
+}
+
+export function ownerLockAlive(directory) {
+  const data = readJsonSafe(path.join(directory, 'owner.lock'));
+  return Boolean(data && processAlive(data.pid));
+}
+
 export function atomicWriteJson(target, value, { pretty = false } = {}) {
   fs.mkdirSync(path.dirname(target), { recursive: true, mode: 0o700 });
   const temporary = `${target}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
@@ -12,7 +25,7 @@ export function atomicWriteJson(target, value, { pretty = false } = {}) {
 }
 
 export function readTail(file, limit = 500, { tolerateIncomplete = true } = {}) {
-  if (!fs.existsSync(file)) return [];
+  if (!Number.isFinite(limit) || limit <= 0 || !fs.existsSync(file)) return [];
   const fd = fs.openSync(file, 'r');
   try {
     const size = fs.fstatSync(fd).size;
@@ -20,7 +33,7 @@ export function readTail(file, limit = 500, { tolerateIncomplete = true } = {}) 
     const bytes = Buffer.alloc(size - start);
     fs.readSync(fd, bytes, 0, bytes.length, start);
     const lines = bytes.toString('utf8').split('\n');
-    if (tolerateIncomplete || lines.at(-1)) lines.pop();
+    if (tolerateIncomplete) lines.pop();
     if (start) lines.shift();
     return lines.filter(Boolean).slice(-limit).map(line => JSON.parse(line));
   } finally { fs.closeSync(fd); }
@@ -41,7 +54,13 @@ export class Storage {
   }
   load(id) { return JSON.parse(fs.readFileSync(path.join(this.directory(id), 'agent.json'), 'utf8')); }
   all() {
-    return fs.readdirSync(this.root).filter(id => /^[0-9a-f-]{36}$/.test(id)).map(id => this.load(id));
+    if (!fs.existsSync(this.root)) return [];
+    const records = [];
+    for (const id of fs.readdirSync(this.root).filter(name => /^[0-9a-f-]{36}$/.test(name))) {
+      const record = readJsonSafe(path.join(this.root, id, 'agent.json'));
+      if (record) records.push(record);
+    }
+    return records;
   }
   repairEvents(id) {
     const file = path.join(this.directory(id), 'events.jsonl'); if (!fs.existsSync(file)) return;

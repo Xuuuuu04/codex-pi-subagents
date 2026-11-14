@@ -9,7 +9,8 @@ const pkg = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'))
 const name = 'pi-subagents';
 const args = process.argv.slice(2);
 const remove = args.includes('--remove');
-const target = args.find(arg => arg.startsWith('--target='))?.slice(9) || 'all';
+const targetArg = args.find(arg => arg.startsWith('--target='));
+const target = targetArg === undefined ? 'all' : targetArg.slice(9);
 if (args.some(arg => arg !== '--remove' && !arg.startsWith('--target=')) || !['all', 'codex', 'claude', 'antigravity'].includes(target)) {
   throw new Error('Usage: install.js [--target=all|codex|claude|antigravity] [--remove]');
 }

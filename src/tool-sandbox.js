@@ -103,7 +103,7 @@ export function runSandboxed(policy, executable, args, { signal, timeout = 60000
 
 const worker = `const fs=require('fs'); const [operation,file,extra]=process.argv.slice(1);
 if(operation==='read') process.stdout.write(fs.readFileSync(file));
-else if(operation==='read_head'){const len=Math.max(1,Number(extra)||64);const fd=fs.openSync(file,'r');try{const buf=Buffer.alloc(len);const n=fs.readSync(fd,buf,0,len,0);process.stdout.write(buf.subarray(0,n));}finally{fs.closeSync(fd);}}
+else if(operation==='read_head'){const len=Number(extra);if(!Number.isInteger(len)||len<0)throw new Error('Invalid read_head length');if(len>0){const fd=fs.openSync(file,'r');try{const buf=Buffer.alloc(len);const n=fs.readSync(fd,buf,0,len,0);process.stdout.write(buf.subarray(0,n));}finally{fs.closeSync(fd);}}}
 else if(operation==='access') fs.accessSync(file);
 else {let value='';process.stdin.setEncoding('utf8');process.stdin.on('data',c=>value+=c);process.stdin.on('end',()=>{fs.mkdirSync(require('path').dirname(file),{recursive:true});fs.writeFileSync(file,value)});}`;
 export async function fileOperation(policy, operation, filename, content, options = {}) {
@@ -111,7 +111,12 @@ export async function fileOperation(policy, operation, filename, content, option
   const stdout = [];
   const stderr = [];
   const workerArgs = ['--no-warnings', '-e', worker, operation, file];
-  if (operation === 'read_head') workerArgs.push(String(options.length || 64));
+  if (operation === 'read_head') {
+    const length = options.length ?? 64;
+    if (!Number.isInteger(length) || length < 0) throw new Error('Invalid read_head length');
+    if (length === 0) return Buffer.alloc(0);
+    workerArgs.push(String(length));
+  }
   const result = await runSandboxed(policy, process.execPath, workerArgs, {
     input: content,
     onStdout: chunk => stdout.push(chunk),

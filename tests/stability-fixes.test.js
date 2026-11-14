@@ -72,5 +72,26 @@ test('FileTaskStore.prune handles missing tasks directory and atomicWriteJson le
   const logFile = path.join(dir, 'sample.jsonl');
   fs.writeFileSync(logFile, '{"a":1}\n{"a":2}\n{"partial":');
   assert.equal(readTail(logFile).length, 2);
+  assert.deepEqual(readTail(logFile, 0), []);
+  assert.deepEqual(readTail(logFile, -5), []);
+  assert.deepEqual(readTail(logFile, Number.NaN), []);
+  const completeLog = path.join(dir, 'complete.jsonl');
+  fs.writeFileSync(completeLog, '{"a":1}\n{"a":2}');
+  assert.equal(readTail(completeLog, 10, { tolerateIncomplete: false }).length, 2);
   assert.equal(storage.root, path.resolve(dir));
+});
+
+test('read_head handles length=0 and rejects invalid lengths explicitly', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pi-readhead-edge-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  for (const name of ['work', 'state', 'tmp']) fs.mkdirSync(path.join(root, name));
+  const cwd = path.join(root, 'work');
+  fs.mkdirSync(path.join(cwd, 'assets'));
+  fs.writeFileSync(path.join(cwd, 'assets/sample.bin'), Buffer.from('abcdef'));
+  const policy = { cwd, ownedPaths: ['assets'], tempDir: path.join(root, 'tmp'), stateRoot: path.join(root, 'state'), allowNetwork: false, sandboxMode: 'strict' };
+
+  const empty = await fileOperation(policy, 'read_head', 'assets/sample.bin', undefined, { length: 0 });
+  assert.equal(empty.length, 0);
+  await assert.rejects(() => fileOperation(policy, 'read_head', 'assets/sample.bin', undefined, { length: -1 }), /length|non-negative|integer/i);
+  await assert.rejects(() => fileOperation(policy, 'read_head', 'assets/sample.bin', undefined, { length: 1.5 }), /length|integer/i);
 });

@@ -1,4 +1,5 @@
 import fs from 'node:fs';
+import { atomicWriteJson } from './storage.js';
 
 const clip = (text, limit) => text.length > limit ? text.slice(-limit) : text;
 const outputOf = result => (result?.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n');
@@ -37,10 +38,10 @@ export class LiveStream {
   flush() {
     try {
       if (!this.message && !this.tools.size) { fs.rmSync(this.file, { force: true }); return; }
-      const temporary = `${this.file}.${process.pid}.tmp`;
-      fs.writeFileSync(temporary, JSON.stringify({ updatedAt: new Date().toISOString(), message: this.message, tools: Object.fromEntries(this.tools) }), { mode: 0o600 });
-      fs.renameSync(temporary, this.file);
-    } catch {} // Live mirroring is best effort; agent control never depends on it.
+      atomicWriteJson(this.file, { updatedAt: new Date().toISOString(), message: this.message, tools: Object.fromEntries(this.tools) });
+    } catch (error) {
+      if (error?.code !== 'ENOENT') process.stderr.write(`LiveStream flush failed: ${error.message}\n`);
+    }
   }
   close() { clearTimeout(this.timer); this.timer = null; this.message = null; this.tools.clear(); this.flush(); }
 }

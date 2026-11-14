@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { createServer } from '../src/server.js';
-import { Callbacks } from '../src/callbacks.js';
+import { Callbacks, scanAgentEvents, readCallbackRecord } from '../src/callbacks.js';
 import { parentIdentity } from '../src/controller-client.js';
 import { spawnReminder, waitReminder } from '../src/wait-reminder.js';
 import { setup, spawn, settled, processFactory } from './helpers/setup.js';
@@ -218,4 +218,100 @@ test('install.js builds and removes Antigravity plugin bundle cleanly', t => {
   execFileSync(process.execPath, [installScript, '--target=antigravity', '--remove'], { env, encoding: 'utf8' });
   assert.equal(fs.existsSync(pluginRoot), false);
   assert.ok(fs.readdirSync(backupDir).some(name => name.startsWith('antigravity-')));
+});
+
+test('scanAgentEvents drains >100 non-matching events and advances cursor without dropping trailing events', async t => {
+  const { manager, cwd } = await setup(t);
+  const a = await spawn(manager, cwd, 'done');
+  await settled(manager, a.id);
+  const owned = manager.get(a.id);
+  const startSeq = owned.record.sequence;
+  for (let i = 0; i < 125; i++) {
+    manager.event(owned, 'tool_execution_start', { toolCallId: `tc-${i}`, toolName: 'read' });
+  }
+  const onlyProgress = scanAgentEvents(manager.storage, a.id, {
+    afterSequence: startSeq,
+    eventTypes: ['settled', 'question'],
+    source: 'test-progress',
+    sessionId: 'conv-drain',
+  });
+  assert.equal(onlyProgress.matched.length, 0);
+  assert.equal(onlyProgress.cursor, startSeq + 125);
+  assert.equal(readCallbackRecord(manager.storage.root, a.id).antigravityDeliveredSeq, startSeq + 125);
+
+  manager.event(owned, 'question', { questionId: 'q-tail', question: 'Ready?' });
+  const subsetOnly = scanAgentEvents(manager.storage, a.id, {
+    afterSequence: onlyProgress.cursor,
+    eventTypes: ['settled'],
+    source: 'test-subset',
+    sessionId: 'conv-drain',
+  });
+  assert.equal(subsetOnly.matched.length, 0);
+  assert.equal(subsetOnly.cursor, startSeq + 126);
+  assert.equal(readCallbackRecord(manager.storage.root, a.id).antigravityDeliveredSeq, startSeq + 125);
+
+  const hit = scanAgentEvents(manager.storage, a.id, {
+    afterSequence: readCallbackRecord(manager.storage.root, a.id).antigravityDeliveredSeq,
+    eventTypes: ['settled', 'question'],
+    source: 'test-drain',
+    sessionId: 'conv-drain',
+  });
+  assert.equal(hit.matched.length, 1);
+  assert.equal(hit.matched[0].questionId, 'q-tail');
+  assert.equal(hit.cursor, startSeq + 126);
+  assert.equal(readCallbackRecord(manager.storage.root, a.id).antigravityDeliveredSeq, startSeq + 126);
+});
+
+test('bind_session with empty agentIds binds nothing and read_agent advances cursor while reply_question does not', async t => {
+  const { cwd, manager: helper, track } = await setup(t);
+  const { server, manager } = await createServer({ root: `${helper.storage.root}-cursor`, executable: process.execPath, processFactory });
+  track(manager);
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: 'antigravity-client', version: '1.0.0' });
+  t.after(async () => { await client.close(); await server.close(); });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+
+  const s1 = (await client.callTool({
+    name: 'spawn_agent',
+    arguments: { cwd, prompt: 'done', provider: 'fake', model: 'cheap', ownedPaths: ['src'], workspaceMode: 'shared' },
+  })).structuredContent.result;
+  const emptyBind = (await client.callTool({
+    name: 'bind_session',
+    arguments: { sessionId: 'conv-empty', kind: 'antigravity', agentIds: [] },
+  })).structuredContent.result;
+  assert.deepEqual(emptyBind.boundAgents, []);
+  const noneInEmpty = (await client.callTool({ name: 'list_agents', arguments: { sessionId: 'conv-empty' } })).structuredContent.result;
+  assert.deepEqual(noneInEmpty.agents, []);
+
+  const ask = (await client.callTool({
+    name: 'spawn_agent',
+    arguments: { cwd, prompt: 'ASK', provider: 'fake', model: 'cheap', ownedPaths: ['docs'], workspaceMode: 'shared', antigravitySessionId: 'conv-cur' },
+  })).structuredContent.result;
+  let questionId;
+  for (let i = 0; i < 40; i++) {
+    const cur = manager.read(ask.id).agent;
+    if (cur.status === 'waiting' && cur.questionIds?.length) {
+      questionId = cur.questionIds[0];
+      break;
+    }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  assert.ok(questionId);
+
+  const beforeReplySeq = readCallbackRecord(manager.storage.root, ask.id)?.antigravityDeliveredSeq || 0;
+  await client.callTool({ name: 'reply_question', arguments: { questionId, message: 'proceed' } });
+  const afterReplyCb = readCallbackRecord(manager.storage.root, ask.id);
+  assert.notEqual(afterReplyCb?.lastObservedBy, 'reply_question');
+  assert.equal(afterReplyCb?.antigravityDeliveredSeq || 0, beforeReplySeq);
+
+  await settled(manager, ask.id);
+  const readRes = (await client.callTool({
+    name: 'read_agent',
+    arguments: { agentId: ask.id, afterSequence: 0 },
+  })).structuredContent.result;
+  const afterReadCb = readCallbackRecord(manager.storage.root, ask.id);
+  assert.equal(afterReadCb.lastObservedBy, 'read_agent');
+  assert.ok(afterReadCb.antigravityDeliveredSeq >= readRes.nextSequence);
+  assert.ok(s1.id);
 });

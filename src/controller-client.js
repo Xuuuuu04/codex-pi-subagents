@@ -6,13 +6,13 @@ import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { defaultMaxAgents } from './manager.js';
-import { processAlive } from './storage.js';
+import { processAlive, readJsonSafe } from './storage.js';
 
 const script = fileURLToPath(new URL('./controller.js', import.meta.url));
 export function normalizeParentInfo(input, fallback) {
   const source = input && typeof input === 'object' ? input : {};
   const result = {};
-  if (typeof source.kind === 'string' && ['antigravity', 'codex', 'claude', 'other', 'unknown'].includes(source.kind)) result.kind = source.kind;
+  if (typeof source.kind === 'string' && ['antigravity', 'codex', 'claude', 'mcp', 'other', 'unknown'].includes(source.kind)) result.kind = source.kind;
   else if (fallback?.kind) result.kind = fallback.kind;
   for (const key of ['sessionId', 'hostSessionId', 'projectId']) {
     const val = typeof source[key] === 'string' && source[key].trim() && source[key].length <= 500 ? source[key].trim() : fallback?.[key];
@@ -76,6 +76,19 @@ export class ControllerClient extends EventEmitter {
   closeAgent(agentId) { return this.call('closeAgent', { agentId }); }
   resume(agentId, options = {}) { return this.call('resume', { agentId, ...options }); }
   rebindParent(parent) { return this.call('attach', { pid: process.pid, parent }); }
+  health() { return this.call('health', {}); }
+  readMessages(values) { return this.call('readMessages', values); }
+  ackMessages(agentId, messageIds) { return this.call('ackMessages', { agentId, messageIds }); }
+  updatePolicy(values) { return this.call('updatePolicy', values); }
+  adoptTask(taskId) { return this.call('adoptTask', { taskId }); }
+  async bindSession(parent, agentIds) {
+    try { return await this.call('bindSession', { parent, agentIds }); }
+    catch (error) {
+      if (error.message !== 'Unsupported controller method') throw error;
+      await this.rebindParent(parent);
+      return { identity: parent, boundAgents: [], legacyController: true };
+    }
+  }
   async watch() {
     const after = {};
     while (!this.closed) {
@@ -94,18 +107,22 @@ export class ControllerClient extends EventEmitter {
 }
 
 async function probe(root) {
-  const file = path.join(root, 'controller.json');
-  if (!fs.existsSync(file)) return null;
-  try {
-    const info = JSON.parse(fs.readFileSync(file, 'utf8'));
-    const health = await new ControllerClient(root, info).call('health');
-    if (health?.scriptPath && !fs.existsSync(health.scriptPath) && (health.activeAgents ?? 0) === 0 && (health.totalAgents ?? 0) === 0) {
-      try { process.kill(info.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
-      for (let i = 0; i < 30 && processAlive(info.pid); i++) await new Promise(resolve => setTimeout(resolve, 50));
+  const info = readJsonSafe(path.join(root, 'controller.json'));
+  if (!info?.socket) return null;
+  let health;
+  try { health = await new ControllerClient(root, info).health(); }
+  catch (error) {
+    if (['ENOENT', 'ECONNREFUSED', 'ECONNRESET', 'EPIPE'].includes(error?.code) || error?.name === 'AbortError' || /timed out|Unauthorized/i.test(error?.message || '')) {
       return null;
     }
-    return info;
-  } catch { return null; }
+    throw error;
+  }
+  if (health?.scriptPath && !fs.existsSync(health.scriptPath) && (health.activeAgents ?? 0) === 0 && (health.totalAgents ?? 0) === 0) {
+    try { process.kill(info.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
+    for (let i = 0; i < 30 && processAlive(info.pid); i++) await new Promise(resolve => setTimeout(resolve, 50));
+    return null;
+  }
+  return info;
 }
 export async function connectController({ root, executable = 'pi', maxAgents = defaultMaxAgents }) {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });

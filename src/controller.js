@@ -94,12 +94,49 @@ async function once(parentId, key, values, operation) {
   writes.set(key, pending);
   try { return await pending; } finally { writes.delete(key); }
 }
+function resumeAgent(parentId, v) {
+  const current = manager.agents.get(v.agentId);
+  const parentIdentityInfo = parents.get(parentId)?.identity;
+  const explicit = v.antigravitySessionId ? { kind: 'antigravity', sessionId: v.antigravitySessionId, cwd: parentIdentityInfo?.cwd } : v.parentSession || parentIdentityInfo;
+  if (current && current.record.parentId !== parentId && parents.get(current.record.parentId)?.connected && processAlive(parents.get(current.record.parentId).pid)) {
+    throw new Error('Agent belongs to an attached parent');
+  }
+  if (current?.rpc && !current.rpc.exited) {
+    current.record.parentId = parentId;
+    current.record.parentInfo = normalizeParentInfo(explicit, current.record.parentInfo);
+    manager.storage.save(current.record);
+    return { ...manager.summary(current), reattached: true };
+  }
+  return manager.resume(v.agentId, v).then(() => {
+    const agent = manager.get(v.agentId);
+    agent.record.parentId = parentId;
+    agent.record.parentInfo = normalizeParentInfo(explicit, agent.record.parentInfo);
+    manager.storage.save(agent.record);
+    return manager.summary(agent);
+  });
+}
+
+function bindSession(parentId, parent, v) {
+  const identity = normalizeParentInfo(v.parent, parent.identity);
+  parents.set(parentId, { ...parent, connected: true, identity, lastSeen: Date.now() });
+  const ids = Array.isArray(v.agentIds) ? v.agentIds : [...manager.agents.values()].filter(a => a.record.parentId === parentId).map(a => a.record.id);
+  const bound = [];
+  for (const id of ids) {
+    const target = manager.get(id);
+    const owner = target.record.parentId;
+    if (owner !== parentId && parents.get(owner)?.connected && processAlive(parents.get(owner).pid)) {
+      throw new Error('Agent belongs to another parent; explicitly resume only after its parent detaches.');
+    }
+    bound.push(manager.bindParentInfo(id, identity, owner !== parentId ? parentId : undefined));
+  }
+  return { identity, boundAgents: bound.map(a => a.id) };
+}
+
 async function dispatch(parentId, method, v) {
   if (method === 'health') {
     const activeAgents = [...manager.agents.values()].filter(a => activeAgentStatuses.has(a.record.status)).length;
     return { service: 'pi-controller', pid: process.pid, scriptPath: controllerScriptPath, activeAgents, totalAgents: manager.agents.size };
   }
-  // 父会话身份（客户端类型、会话编号、所在目录）由桥接进程自报，只用于面板分组显示，不参与任何权限判断。
   if (method === 'attach') {
     const identity = normalizeParentInfo(v.parent, parents.get(parentId)?.identity);
     parents.set(parentId, { connected: true, pid: v.pid, identity, lastSeen: Date.now() }); return { parentId, identity };
@@ -120,45 +157,13 @@ async function dispatch(parentId, method, v) {
     return value;
   }
   if (method === 'models') return manager.models(v.provider);
-  if (method === 'spawn') return once(parentId, v.requestId, { method, ...v }, async () => {
-    const result = await manager.spawn({ ...v, parentId, parentInfo: parents.get(parentId)?.identity }); return result;
-  });
+  if (method === 'spawn') return once(parentId, v.requestId, { method, ...v }, () => manager.spawn({ ...v, parentId, parentInfo: parents.get(parentId)?.identity }));
   if (method === 'list') {
     const all = manager.list(v.includeSaved);
     return all.filter(value => manager.agents.get(value.id)?.record.parentId === parentId || v.includeSaved).map(value => ({ ...value, owned: manager.agents.get(value.id)?.record.parentId === parentId }));
   }
-  if (method === 'resume') {
-    const current = manager.agents.get(v.agentId);
-    const parentIdentityInfo = parents.get(parentId)?.identity;
-    const explicit = v.antigravitySessionId ? { kind: 'antigravity', sessionId: v.antigravitySessionId, cwd: parentIdentityInfo?.cwd } : v.parentSession || parentIdentityInfo;
-    if (current && current.record.parentId !== parentId && parents.get(current.record.parentId)?.connected && processAlive(parents.get(current.record.parentId).pid)) throw new Error('Agent belongs to an attached parent');
-    if (current?.rpc && !current.rpc.exited) {
-      current.record.parentId = parentId;
-      current.record.parentInfo = normalizeParentInfo(explicit, current.record.parentInfo);
-      manager.storage.save(current.record);
-      return { ...manager.summary(current), reattached: true };
-    }
-    const result = await manager.resume(v.agentId, v);
-    const agent = manager.get(v.agentId);
-    agent.record.parentId = parentId;
-    agent.record.parentInfo = normalizeParentInfo(explicit, agent.record.parentInfo);
-    manager.storage.save(agent.record);
-    return manager.summary(agent);
-  }
-  if (method === 'bindSession') {
-    const identity = normalizeParentInfo(v.parent, parents.get(parentId)?.identity);
-    parents.set(parentId, { ...parent, connected: true, identity, lastSeen: Date.now() });
-    const ids = Array.isArray(v.agentIds) && v.agentIds.length ? v.agentIds : owned().map(a => a.record.id);
-    const bound = [];
-    for (const id of ids) {
-      const target = manager.get(id);
-      if (target.record.parentId !== parentId && parents.get(target.record.parentId)?.connected && processAlive(parents.get(target.record.parentId).pid)) {
-        throw new Error('Agent belongs to another parent; explicitly resume only after its parent detaches.');
-      }
-      bound.push(manager.bindParentInfo(id, identity));
-    }
-    return { identity, boundAgents: bound.map(a => a.id) };
-  }
+  if (method === 'resume') return resumeAgent(parentId, v);
+  if (method === 'bindSession') return bindSession(parentId, parent, v);
   if (method === 'poll') {
     const ids = owned().map(value => value.record.id);
     if (!ids.length) return { events: [] };

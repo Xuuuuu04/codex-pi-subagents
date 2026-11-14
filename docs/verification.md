@@ -94,3 +94,12 @@ MCP配置继续指向当前源码，无需复制凭据或另装 CodexBar。旧�
 2026-10-13 面板改为 Pi 调度台：分组会话列表、30 分钟工具活跃度、进度轨道、工具统计、事件流、明暗主题、浏览器提醒和快捷键。默认端口改为 `127.0.0.1:3141`（本机 4001、4301、4310 被 QQ 占用）；新面板启动后自动退出旧端口上的只读面板，不影响代理。全部 37 项检查通过，并用真实会话数据检查了桌面、暗色与 375px 窄屏布局。
 
 2026-10-13 增加实时对话：按时间顺序显示思考、回复、终端窗口、编辑差异、报告与提问和每轮改动汇总；管理进程新增 `live.json` 逐字镜像（需管理进程自然重启后生效）。全部 38 项检查通过，并用真实会话检查了明暗主题与窄屏。
+
+## 1.6.0 稳定性优化、面板重构与 Antigravity 插件接入
+
+2026-11-14 完成核心稳定性加固、Antigravity 原生插件接入、Web 面板模块化与两轮代码结构审查修复：
+
+- 稳定性与控制进程：配置与运行状态文件全部改为临时文件原子写入（`atomicWriteJson`）；严格区分 `readTail` 非正限制和损坏末尾；`read_head` 支持长度为 0 且在宿主与沙箱端校验非负整数参数；新桥接在检测到空闲旧控制进程脚本路径变化时自动替换；`npm run check`、`npm test`（79 条全过）与严格插件校验通过；`npm run verify:communication` 通过真实 stdio 校验了 22 个工具和能力信息，随后在调用 OpenCode Go 模型时因本机账号缺少有效订阅返回 HTTP 403（退出码 1，记录见 `.agents/records/communication-1794627522407`）。
+- Antigravity 接入与去重：新增 `bind_session`、`get_subagent_health` 与 `scripts/antigravity-hook.js`（`PreInvocation` 幂等注入待处理事件、`Stop` 在存在活跃或等答复子代理且缺少活跃 `wait-events` 监听器时拦截过早收尾）；`callbacks/<id>.json` 通过 `antigravityDeliveredSeq` 在钩子、`wait-events --session`、`read_agent`、`wait_agent` 间单调递增去重，并在只监听部分事件类型时保留未投递默认事件不被跳过；`npm run install:antigravity` 生成插件并用 `agy plugin validate --strict` 严格校验通过。
+- 模块化 Web 面板：后端拆出 `/api/events` SSE 实时推送（含 2 秒轮询兜底）、`/api/system`（控制进程状态、活跃监听器与计数）、60 秒缓存 `/api/quota` 与 `dashboard.lock` 并发锁，前端拆分为 `dashboard/*.js` 7 个模块并增加宿主/状态筛选、对话内搜索、五页详情栏、异常自动重认证和 375px 窄屏抽屉交互；实测页面 `http://127.0.0.1:3141/` 显示实时推送正常、零控制台异常且 375px 宽度无横向溢出。
+- 自动化测试：包含新增的 SSE 断线安全、端口校验、`readTail`/`read_head` 边界、`scanAgentEvents` 多批排干与游标去重、`bind_session`/`reply_question`/`read_agent` 协作和模块化行数/无注释规则检查在内，`npm run check` 与 `npm test` 全部 79 项测试通过。

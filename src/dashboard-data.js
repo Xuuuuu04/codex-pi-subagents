@@ -1,12 +1,50 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { processAlive, readTail, atomicWriteJson } from './storage.js';
+import { processAlive, readTail, atomicWriteJson, readJsonSafe, ownerLockAlive } from './storage.js';
 import { estimateRoundedTokens } from './token-estimate.js';
 
-const active = new Set(['starting', 'running', 'waiting', 'finishing', 'idle']);
+export const defaultDashboardPort = 3141;
+export const workingStatuses = new Set(['starting', 'running', 'finishing']);
+export const activeStatuses = new Set(['starting', 'running', 'waiting', 'finishing', 'idle']);
+export const isWorkingStatus = status => workingStatuses.has(status);
+export const isActiveStatus = status => activeStatuses.has(status);
+const active = activeStatuses;
 const working = new Set(['starting', 'running', 'waiting', 'finishing']);
 export const isAgentId = id => /^[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/.test(id);
 export { readTail };
+
+export function parseDashboardPort(raw = process.env.PI_DASHBOARD_PORT) {
+  if (raw === undefined || raw === null || raw === '') return defaultDashboardPort;
+  const text = String(raw).trim();
+  if (!/^\d+$/.test(text)) throw new Error(`Invalid dashboard port: ${raw}`);
+  const port = Number(text);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`Invalid dashboard port: ${raw}`);
+  return port;
+}
+
+export async function readRunningDashboard(root, { checkPidMatch = true, timeoutMs = 1500 } = {}) {
+  const info = readJsonSafe(path.join(root, 'dashboard.json'));
+  if (!info || (checkPidMatch && !processAlive(info.pid))) return null;
+  let url;
+  try { url = new URL(info.url); }
+  catch (error) {
+    if (error instanceof TypeError) return null;
+    throw error;
+  }
+  if (url.hostname !== '127.0.0.1') throw new Error('Invalid local dashboard address');
+  try {
+    const response = await fetch(new URL('/api/health', url), {
+      headers: { authorization: `Bearer ${info.token || url.hash.slice(1)}` },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    const health = await response.json();
+    if (!response.ok || health.service !== 'pi-dashboard' || (checkPidMatch && health.pid !== info.pid)) return null;
+    return { ...info, scriptPath: health.scriptPath || null };
+  } catch (error) {
+    if (error instanceof SyntaxError || error instanceof TypeError || error?.name === 'AbortError' || error?.name === 'TimeoutError') return null;
+    throw error;
+  }
+}
 
 /** Bound every string inside tool arguments so one huge write cannot flood the page. */
 function clipValue(value, limit = 6000) {
@@ -131,7 +169,10 @@ export class DashboardData {
         this.marksCache = { mtime: stat.mtimeMs, value };
       }
       return structuredClone(this.marksCache.value);
-    } catch { return { agents: {}, groups: {} }; }
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error instanceof SyntaxError) return { agents: {}, groups: {} };
+      throw error;
+    }
   }
   saveMarks(marks) {
     atomicWriteJson(this.marksFile, marks);
@@ -142,7 +183,7 @@ export class DashboardData {
     if (status !== null && !['completed', 'closed'].includes(status)) throw new Error('Mark must be completed, closed or null');
     const marks = this.marks(); const entry = marks.agents[id] || {};
     const current = this.snapshot(id).status;
-    if (['starting', 'running', 'finishing'].includes(current) && !entry.status) throw new Error('正在工作的会话不能手动标记');
+    if (isWorkingStatus(current) && !entry.status) throw new Error('正在工作的会话不能手动标记');
     if (status === null) { delete entry.status; delete entry.at; } else Object.assign(entry, { status, at: new Date().toISOString() });
     if (Object.keys(entry).length) marks.agents[id] = entry; else delete marks.agents[id];
     this.saveMarks(marks);
@@ -169,11 +210,15 @@ export class DashboardData {
   }
   /** 模型目录由管理进程写入，用来显示上下文窗口。 */
   catalog() {
+    const file = path.join(this.root, 'models-catalog.json');
     try {
-      const stat = fs.statSync(path.join(this.root, 'models-catalog.json'));
-      if (this.catalogCache?.mtime !== stat.mtimeMs) this.catalogCache = { mtime: stat.mtimeMs, value: JSON.parse(fs.readFileSync(path.join(this.root, 'models-catalog.json'), 'utf8')) };
+      const stat = fs.statSync(file);
+      if (this.catalogCache?.mtime !== stat.mtimeMs) this.catalogCache = { mtime: stat.mtimeMs, value: JSON.parse(fs.readFileSync(file, 'utf8')) };
       return this.catalogCache.value;
-    } catch { return []; }
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error instanceof SyntaxError) return [];
+      throw error;
+    }
   }
   activeWatchers() {
     const dir = path.join(this.root, 'watchers');
@@ -185,48 +230,34 @@ export class DashboardData {
     }
     const watchers = [];
     for (const file of files) {
-      try {
-        const raw = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
-        if (!Number.isInteger(raw?.pid) || !processAlive(raw.pid)) continue;
-        watchers.push({
-          pid: raw.pid,
-          sessionId: raw.sessionId || null,
-          agentIds: Array.isArray(raw.agentIds) ? raw.agentIds : [],
-          startedAt: raw.startedAt || null,
-        });
-      } catch (error) {
-        if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
-      }
+      const raw = readJsonSafe(path.join(dir, file));
+      if (!raw || !Number.isInteger(raw.pid) || !processAlive(raw.pid)) continue;
+      watchers.push({
+        pid: raw.pid,
+        sessionId: raw.sessionId || null,
+        agentIds: Array.isArray(raw.agentIds) ? raw.agentIds : [],
+        startedAt: raw.startedAt || null,
+      });
     }
     return watchers;
   }
   callbackInfo(id) {
-    const file = path.join(this.root, 'callbacks', `${id}.json`);
-    try {
-      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-      return {
-        host: raw.host || null,
-        enabled: !!raw.enabled,
-        antigravitySessionId: raw.antigravitySessionId || null,
-        antigravityDeliveredSeq: raw.antigravityDeliveredSeq || 0,
-        claudeSessionId: raw.claudeSessionId || null,
-        codexThreadId: raw.codexThreadId || null,
-        lastObservedBy: raw.lastObservedBy || null,
-      };
-    } catch (error) {
-      if (error?.code === 'ENOENT' || error instanceof SyntaxError) return null;
-      throw error;
-    }
+    const raw = readJsonSafe(path.join(this.root, 'callbacks', `${id}.json`));
+    if (!raw) return null;
+    return {
+      host: raw.host || null,
+      enabled: !!raw.enabled,
+      antigravitySessionId: raw.antigravitySessionId || null,
+      antigravityDeliveredSeq: raw.antigravityDeliveredSeq || 0,
+      claudeSessionId: raw.claudeSessionId || null,
+      codexThreadId: raw.codexThreadId || null,
+      lastObservedBy: raw.lastObservedBy || null,
+    };
   }
   snapshot(id, watchers = null) {
     const directory = this.directory(id);
     const record = JSON.parse(fs.readFileSync(path.join(directory, 'agent.json'), 'utf8'));
-    let controllerAlive = false;
-    const lock = path.join(directory, 'owner.lock');
-    if (fs.existsSync(lock)) {
-      try { controllerAlive = processAlive(JSON.parse(fs.readFileSync(lock, 'utf8')).pid); }
-      catch (error) { if (error.code !== 'ENOENT') throw error; }
-    }
+    const controllerAlive = ownerLockAlive(directory);
     const events = readTail(path.join(directory, 'events.jsonl'));
     const pending = new Map();
     for (const event of events) {
@@ -235,7 +266,7 @@ export class DashboardData {
     }
     let status = !controllerAlive && active.has(record.status) ? 'disconnected' : record.status;
     // 手动标记只改变面板显示，不碰代理进程；正在跑的代理不允许标记。
-    const mark = this.marks().agents[id] || {}; const marked = !!mark.status && (record.updatedAt || '') <= mark.at && !['starting', 'running', 'finishing'].includes(status);
+    const mark = this.marks().agents[id] || {}; const marked = !!mark.status && (record.updatedAt || '') <= mark.at && !isWorkingStatus(status);
     if (marked) status = mark.status;
     const questionIds = new Set(record.questionIds || []);
     const activity = summarizeActivity(events);
@@ -283,9 +314,13 @@ export class DashboardData {
   latestSpeed(id) {
     try {
       const directory = this.directory(id);
-      const record = JSON.parse(fs.readFileSync(path.join(directory, 'agent.json'), 'utf8'));
+      const record = readJsonSafe(path.join(directory, 'agent.json'));
+      if (!record) return null;
       return requestSpeeds(this.sessionEntries(directory, record, 60), 1)[0] || null;
-    } catch { return null; }
+    } catch (error) {
+      if (error?.code === 'ENOENT' || error instanceof SyntaxError) return null;
+      throw error;
+    }
   }
   list() {
     if (!fs.existsSync(this.root)) return { agents: [], errors: [], refreshedAt: new Date().toISOString() };
@@ -299,24 +334,21 @@ export class DashboardData {
     return { agents, errors, groupNames: Object.fromEntries(Object.entries(this.marks().groups).map(([key, value]) => [key, value.name])), refreshedAt: new Date().toISOString() };
   }
   systemStatus() {
-    let controller = null;
-    try {
-      const raw = JSON.parse(fs.readFileSync(path.join(this.root, 'controller.json'), 'utf8'));
-      controller = {
-        pid: raw.pid || null,
-        alive: Number.isInteger(raw?.pid) ? processAlive(raw.pid) : false,
-        startedAt: raw.startedAt || null,
-        version: raw.version || null,
-        scriptPath: raw.scriptPath || null,
-      };
-    } catch (error) {
-      if (error?.code !== 'ENOENT' && !(error instanceof SyntaxError)) throw error;
-    }
+    const rawController = readJsonSafe(path.join(this.root, 'controller.json'));
+    const controller = rawController
+      ? {
+          pid: rawController.pid || null,
+          alive: Number.isInteger(rawController.pid) ? processAlive(rawController.pid) : false,
+          startedAt: rawController.startedAt || null,
+          version: rawController.version || null,
+          scriptPath: rawController.scriptPath || null,
+        }
+      : null;
     const watchers = this.activeWatchers();
     const listed = this.list();
-    const counts = { total: listed.agents.length, working: 0, waiting: 0, idle: 0, completed: 0, failed: 0, closed: 0, disconnected: 0, stopped: 0, errors: listed.errors.length };
+    const counts = { total: listed.agents.length, working: 0, waiting: 0, idle: 0, completed: 0, failed: 0, closed: 0, disconnected: 0, stopped: 0, interrupted: 0, errors: listed.errors.length };
     for (const agent of listed.agents) {
-      if (['starting', 'running', 'finishing'].includes(agent.status)) counts.working++;
+      if (isWorkingStatus(agent.status)) counts.working++;
       else if (agent.status === 'waiting') counts.waiting++;
       else if (agent.status === 'idle') counts.idle++;
       else if (agent.status === 'completed') counts.completed++;
@@ -324,6 +356,7 @@ export class DashboardData {
       else if (agent.status === 'closed') counts.closed++;
       else if (agent.status === 'disconnected') counts.disconnected++;
       else if (agent.status === 'stopped') counts.stopped++;
+      else if (agent.status === 'interrupted') counts.interrupted++;
     }
     return { controller, modelCount: this.catalog().length, watchers, counts, dashboardPid: process.pid, refreshedAt: new Date().toISOString() };
   }
@@ -348,9 +381,8 @@ export class DashboardData {
   }
   /** Streaming mirror written by newer managers; stale files from a stopped run are ignored. */
   live(directory) {
-    try {
-      const live = JSON.parse(fs.readFileSync(path.join(directory, 'live.json'), 'utf8'));
-      return Date.now() - Date.parse(live.updatedAt) < 10 * 60 * 1000 ? live : null;
-    } catch { return null; }
+    const live = readJsonSafe(path.join(directory, 'live.json'));
+    if (!live) return null;
+    return Date.now() - Date.parse(live.updatedAt) < 10 * 60 * 1000 ? live : null;
   }
 }

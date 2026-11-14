@@ -1,4 +1,4 @@
-import { el, morph, clock, fullDate, statusLabel, copyText, replyPayload } from './dom.js';
+import { el, morph, clock, fullDate, statusLabel, isWorking, showToast, copyText, replyPayload } from './dom.js';
 import { kvRow } from './panels.js';
 
 export function renderDock(alertsEl, nowEl, agents, onSelect) {
@@ -27,7 +27,7 @@ export function renderDock(alertsEl, nowEl, agents, onSelect) {
     alertsEl.replaceChildren();
   }
 
-  const running = agents.filter(a => ['starting', 'running', 'finishing'].includes(a.status));
+  const running = agents.filter(a => isWorking(a.status));
   if (!running.length) {
     nowEl.replaceChildren(el('span', { className: 'muted' }, '当前没有运行中的子代理'));
     return;
@@ -47,7 +47,11 @@ export function showMenu(menuEl, x, y, items) {
       type: 'button',
       className: 'menu-item',
       disabled: !!item.disabled,
-      onclick: async () => { menuEl.hidden = true; await item.onClick(); },
+      onclick: async () => {
+        menuEl.hidden = true;
+        try { await item.onClick(); }
+        catch (error) { showToast(error?.message || '操作失败'); }
+      },
     }, item.label),
   ));
   menuEl.hidden = false;
@@ -56,7 +60,7 @@ export function showMenu(menuEl, x, y, items) {
 }
 
 export function openAgentMenu(menuEl, agent, x, y, actions) {
-  const isBusy = ['starting', 'running', 'finishing'].includes(agent.status);
+  const isBusy = isWorking(agent.status);
   showMenu(menuEl, x, y, [
     { label: '复制代理 ID', onClick: () => copyText(agent.id, '已复制代理 ID') },
     { label: '标为已完成', disabled: isBusy && !agent.marked, onClick: () => actions.onMark(agent.id, 'completed') },
@@ -67,7 +71,7 @@ export function openAgentMenu(menuEl, agent, x, y, actions) {
 }
 
 export function openGroupMenu(menuEl, group, rect, actions) {
-  const markable = group.agents.filter(a => !['starting', 'running', 'finishing'].includes(a.status) || a.marked);
+  const markable = group.agents.filter(a => !isWorking(a.status) || a.marked);
   const markedAny = group.agents.some(a => a.marked);
   showMenu(menuEl, rect.left, rect.bottom + 4, [
     { label: '重命名分组', onClick: () => actions.onRename(group) },
@@ -82,8 +86,12 @@ export function openRenameDialog(dialogEl, group, currentName, onSubmit) {
     className: 'dialog-box',
     onsubmit: async e => {
       e.preventDefault();
-      await onSubmit(group.key, input.value.trim() || null);
-      dialogEl.close();
+      try {
+        await onSubmit(group.key, input.value.trim() || null);
+        dialogEl.close();
+      } catch (error) {
+        showToast(error?.message || '重命名失败');
+      }
     },
   },
   el('div', { className: 'dialog-head' }, el('strong', {}, '重命名分组')),
@@ -98,13 +106,17 @@ export function openRenameDialog(dialogEl, group, currentName, onSubmit) {
 }
 
 export function openMoveDialog(dialogEl, agent, onSubmit) {
-  const input = el('input', { type: 'text', className: 'input', value: agent.movedTo || '', placeholder: '留空则回到原父会话分组' });
+  const input = el('input', { type: 'text', className: 'input', value: agent.movedTo || '', maxlength: 300, placeholder: '留空则回到原父会话分组' });
   const form = el('form', {
     className: 'dialog-box',
     onsubmit: async e => {
       e.preventDefault();
-      await onSubmit(agent.id, input.value.trim() || null);
-      dialogEl.close();
+      try {
+        await onSubmit(agent.id, input.value.trim() || null);
+        dialogEl.close();
+      } catch (error) {
+        showToast(error?.message || '移动失败');
+      }
     },
   },
   el('div', { className: 'dialog-head' }, el('strong', {}, '移动会话分组')),
@@ -171,7 +183,7 @@ export async function renderSystemDialog(dialogEl, apiFetch, forceQuota = false)
       el('div', { className: 'sys-grid' },
         kvRow('独立控制进程', cText),
         kvRow('Web 面板进程', `PID ${sys.dashboardPid} · 模型目录 ${sys.modelCount} 个`),
-        kvRow('子代理统计', `共 ${sys.counts.total} · 工作中 ${sys.counts.working} · 等答复 ${sys.counts.waiting} · 已完成 ${sys.counts.completed} · 异常 ${sys.counts.failed + sys.counts.disconnected}`),
+        kvRow('子代理统计', `共 ${sys.counts.total} · 工作中 ${sys.counts.working} · 等答复 ${sys.counts.waiting} · 已完成 ${sys.counts.completed}${sys.counts.interrupted ? ` · 已中断 ${sys.counts.interrupted}` : ''} · 异常 ${sys.counts.failed + sys.counts.disconnected}`),
       ),
       el('div', { className: 'sec-title' }, `活跃事件监听器 (${sys.watchers.length})`),
       sys.watchers.length

@@ -5,7 +5,7 @@ import net from 'node:net';
 import path from 'node:path';
 import http from 'node:http';
 import { setup, spawn, settled } from './helpers/setup.js';
-import { DashboardData, readTail, summarizeActivity, contextAnalysis, pullRequestLinks } from '../src/dashboard-data.js';
+import { DashboardData, readTail, summarizeActivity, contextAnalysis, pullRequestLinks, parseDashboardPort } from '../src/dashboard-data.js';
 import { startDashboard } from '../src/dashboard.js';
 import { ensureDashboard } from '../src/dashboard-launcher.js';
 import { LiveStream } from '../src/live-stream.js';
@@ -341,4 +341,47 @@ test('module line limits and zero-comment hygiene hold across refactored files',
       assert.equal(/^\s*(\/\/|\/\*|\*\/)/.test(lines[i]), false, `Unexpected comment in ${file}:${i + 1}`);
     }
   }
+});
+
+test('parseDashboardPort validates ports, systemStatus counts interrupted agents, and SSE survives early close', async t => {
+  assert.equal(parseDashboardPort(undefined), 3141);
+  assert.equal(parseDashboardPort('8080'), 8080);
+  for (const bad of ['0', '70000', 'abc', '3141x']) {
+    assert.throws(() => parseDashboardPort(bad), /Invalid dashboard port/);
+  }
+
+  const { manager, cwd } = await setup(t);
+  const a = await spawn(manager, cwd);
+  await settled(manager, a.id);
+  const record = manager.storage.load(a.id);
+  record.status = 'interrupted';
+  manager.storage.save(record);
+
+  const data = new DashboardData(manager.storage.root);
+  assert.equal(data.systemStatus().counts.interrupted, 1);
+
+  const dashboard = await startDashboard({ root: manager.storage.root, port: 0, token: 'sse-safe' });
+  t.after(() => dashboard.close());
+  const origin = new URL(dashboard.url).origin;
+  const headers = { authorization: 'Bearer sse-safe' };
+
+  const evStatus = await new Promise((resolve, reject) => {
+    const req = http.get(origin + '/api/events', { headers }, res => {
+      res.once('data', () => { req.destroy(); resolve(res.statusCode); });
+    });
+    req.on('error', reject);
+  });
+  assert.equal(evStatus, 200);
+
+  const spStatus = await new Promise((resolve, reject) => {
+    const req = http.get(origin + `/api/agents/${a.id}/speed`, { headers }, res => {
+      req.destroy();
+      resolve(res.statusCode);
+    });
+    req.on('error', reject);
+  });
+  assert.equal(spStatus, 200);
+
+  const health = await fetch(origin + '/api/health', { headers });
+  assert.equal(health.status, 200);
 });

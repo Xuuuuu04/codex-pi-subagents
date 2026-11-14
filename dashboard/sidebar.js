@@ -1,15 +1,18 @@
 import {
   el, morph, statusLabel, statusGroup, agentHost, hostMeta,
-  copyText, compactNumber,
+  copyText, compactNumber, totalUsageTokens, agentSessionId,
 } from './dom.js';
 import { renderDistBar } from './charts.js';
 
 export function groupFor(agent) {
   if (agent.movedTo) {
-    return { key: `group:${agent.movedTo}`, title: agent.movedTo, host: agentHost(agent), sessionId: null };
+    const isCustomKey = agent.movedTo.startsWith('custom:');
+    const key = isCustomKey ? agent.movedTo : `group:${agent.movedTo}`;
+    const title = isCustomKey ? (agent.movedTo.slice(7) || agent.movedTo) : agent.movedTo;
+    return { key, rawMovedTo: agent.movedTo, title, host: agentHost(agent), sessionId: null };
   }
   const host = agentHost(agent);
-  const sid = agent.parentInfo?.sessionId || agent.callback?.antigravitySessionId || agent.callback?.claudeSessionId || agent.callback?.codexThreadId;
+  const sid = agentSessionId(agent);
   if (sid) {
     const dir = (agent.parentInfo?.cwd || agent.sourceCwd || agent.cwd || '').split('/').filter(Boolean).pop() || '会话';
     return { key: `session:${host}:${sid}`, title: `${dir} · ${sid.slice(0, 8)}`, host, sessionId: sid };
@@ -92,7 +95,8 @@ function createAgentRow(agent, handlers) {
 
 function updateAgentRow(row, agent, selectedId) {
   const selected = agent.id === selectedId;
-  const digest = JSON.stringify([agent.status, agent.name, agent.sequence, agent.watcherActive, agent.marked, agent.questions?.length || 0, selected, agent.speed?.tps]);
+  const tokens = totalUsageTokens(agent.usage);
+  const digest = JSON.stringify([agent.status, agent.name, agent.sequence, agent.watcherActive, agent.marked, agent.questions?.length || 0, selected, agent.speed?.tps, tokens, agent.model?.model]);
   if (row.dataset.digest === digest) return;
   row.dataset.digest = digest;
   row.className = `agent-row status-border-${agent.status}${selected ? ' selected' : ''}`;
@@ -100,7 +104,7 @@ function updateAgentRow(row, agent, selectedId) {
   const title = agent.name || agent.id.slice(0, 8);
   const right = Number.isFinite(agent.speed?.tps)
     ? `${agent.speed.tps.toFixed(1)} tok/s`
-    : compactNumber(agent.usage?.totalTokens || 0);
+    : compactNumber(tokens);
   row.replaceChildren(
     el('div', { className: 'agent-top' },
       el('span', { className: `dot dot-${agent.status}` }),
@@ -139,7 +143,7 @@ export function renderSidebarList(dom, state, handlers) {
   for (const g of groupList) {
     const node = [...dom.list.children].find(c => c.dataset.k === g.key);
     if (!node) continue;
-    const label = state.groupNames[g.key] || g.title;
+    const label = state.groupNames[g.key] || (g.rawMovedTo && state.groupNames[g.rawMovedTo]) || g.title;
     const host = hostMeta(g.host);
     const headDigest = JSON.stringify([label, g.host, g.sessionId, g.agents.length]);
     const head = node.firstElementChild;

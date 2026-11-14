@@ -1,21 +1,108 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { z } from 'zod';
 import { maxAgentLimit } from './manager.js';
-import { atomicWriteJson } from './storage.js';
+import { atomicWriteJson, readJsonSafe } from './storage.js';
+import { waitCommandFor, sessionIdPattern } from './wait-reminder.js';
 
-const waitScript = fileURLToPath(new URL('../scripts/wait-events.js', import.meta.url));
 export const callbackEvents = ['settled', 'question', 'process_failed', 'budget_limit', 'control_failed', 'message'];
 const defaultEvents = ['settled', 'question', 'process_failed', 'budget_limit', 'control_failed'];
 export const callbackShape = z.object({
   enabled: z.boolean().default(true),
   codexThreadId: z.string().regex(/^[0-9a-f-]{36}$/).optional(),
-  antigravitySessionId: z.string().min(1).max(200).optional(),
+  antigravitySessionId: z.string().trim().min(1).max(200).regex(sessionIdPattern).optional(),
   antigravityCliResume: z.boolean().default(false),
   events: z.array(z.enum(callbackEvents)).min(1).optional(),
 });
+
+const isUuid = value => /^[0-9a-f-]{36}$/.test(value);
+
+export function readCallbackRecord(root, agentId) {
+  if (!isUuid(agentId)) return null;
+  return readJsonSafe(path.join(root, 'callbacks', `${agentId}.json`));
+}
+
+export function advanceAntigravityCursor(root, agentId, sequence, { source = 'wait_agent', sessionId } = {}) {
+  if (!sequence || !isUuid(agentId)) return null;
+  const old = readCallbackRecord(root, agentId);
+  if (!old && !sessionId) return null;
+  const next = Math.max(old?.antigravityDeliveredSeq || 0, sequence);
+  if (old && next <= (old.antigravityDeliveredSeq || 0)) return old;
+  const updated = old
+    ? { ...old, antigravityDeliveredSeq: next, lastObservedBy: source, updatedAt: new Date().toISOString() }
+    : {
+        agentId,
+        enabled: true,
+        events: defaultEvents,
+        host: 'antigravity',
+        antigravitySessionId: sessionId,
+        antigravityCliResume: false,
+        since: 0,
+        antigravityDeliveredSeq: next,
+        lastObservedBy: source,
+        updatedAt: new Date().toISOString(),
+      };
+  atomicWriteJson(path.join(root, 'callbacks', `${agentId}.json`), updated);
+  return updated;
+}
+
+export function sessionBoundAgentIds(storage, sessionId, { respectEnabled = true, extraIds = [] } = {}) {
+  const ids = new Set(extraIds);
+  if (!sessionId) return [...ids];
+  const callbacksDir = path.join(storage.root, 'callbacks');
+  if (fs.existsSync(callbacksDir)) {
+    for (const file of fs.readdirSync(callbacksDir).filter(name => name.endsWith('.json'))) {
+      const id = file.slice(0, -5);
+      const cb = readCallbackRecord(storage.root, id);
+      if (cb?.antigravitySessionId === sessionId && (!respectEnabled || cb.enabled !== false) && fs.existsSync(path.join(storage.root, id, 'agent.json'))) {
+        ids.add(id);
+      }
+    }
+  }
+  for (const record of storage.all()) {
+    if (record.parentInfo?.sessionId !== sessionId) continue;
+    const cb = readCallbackRecord(storage.root, record.id);
+    if (respectEnabled && cb?.enabled === false) continue;
+    ids.add(record.id);
+  }
+  return [...ids];
+}
+
+const defaultEventSet = new Set(defaultEvents);
+
+export function scanAgentEvents(storage, agentId, { afterSequence = 0, eventTypes = defaultEvents, source = 'observer', sessionId } = {}) {
+  const allowed = eventTypes instanceof Set ? eventTypes : new Set(eventTypes);
+  const matched = [];
+  let cursor = afterSequence;
+  let sharedCursor = afterSequence;
+  let sharedBlocked = false;
+  for (;;) {
+    let batch;
+    try { batch = storage.events(agentId, cursor, 100); }
+    catch (error) {
+      if (error?.code === 'ENOENT' || error instanceof SyntaxError) break;
+      throw error;
+    }
+    if (!batch.length) break;
+    for (const event of batch) {
+      cursor = event.sequence;
+      const wanted = allowed.has(event.type) && (event.type !== 'message' || event.recipient === 'parent');
+      if (wanted) {
+        matched.push(event);
+        if (!sharedBlocked) sharedCursor = event.sequence;
+        continue;
+      }
+      if (defaultEventSet.has(event.type)) sharedBlocked = true;
+      else if (!sharedBlocked) sharedCursor = event.sequence;
+    }
+    if (batch.length < 100) break;
+  }
+  if (sharedCursor > afterSequence && (sessionId || readCallbackRecord(storage.root, agentId))) {
+    advanceAntigravityCursor(storage.root, agentId, sharedCursor, { source, sessionId });
+  }
+  return { matched, cursor };
+}
 
 export function callbackText(event) {
   const head = `[pi-subagents callback] agent ${event.agentId} event=${event.type} sequence=${event.sequence}`;
@@ -43,17 +130,17 @@ export function eventSnapshot(event) {
 
 export class Callbacks {
   constructor({ root, server, codexExecutable = process.env.CODEX_EXECUTABLE || 'codex', agyExecutable = process.env.AGY_EXECUTABLE || 'agy', run = execFile }) {
+    this.root = root;
     this.directory = path.join(root, 'callbacks');
     this.server = server; this.codexExecutable = codexExecutable; this.agyExecutable = agyExecutable; this.run = run;
     this.queues = new Map();
   }
   file(agentId) {
-    if (!/^[0-9a-f-]{36}$/.test(agentId)) throw new Error('Invalid agent ID');
+    if (!isUuid(agentId)) throw new Error('Invalid agent ID');
     return path.join(this.directory, agentId + '.json');
   }
   get(agentId) {
-    try { return JSON.parse(fs.readFileSync(this.file(agentId), 'utf8')); }
-    catch (error) { if (error?.code === 'ENOENT' || error instanceof SyntaxError) return null; throw error; }
+    return isUuid(agentId) ? readCallbackRecord(this.root, agentId) : null;
   }
   save(agentId, value) {
     atomicWriteJson(this.file(agentId), value);
@@ -74,20 +161,19 @@ export class Callbacks {
       ...base,
       antigravityHook: Boolean(config.antigravitySessionId),
       antigravityCli: Boolean(config.antigravitySessionId && config.antigravityCliResume),
-      antigravityWaitCommand: config.antigravitySessionId
-        ? `node "${waitScript}" --session ${config.antigravitySessionId}`
-        : `node "${waitScript}" --agent ${config.agentId}`,
+      antigravityWaitCommand: waitCommandFor({ agentId: config.agentId, sessionId: config.antigravitySessionId }),
     };
   }
   configure(agentId, options = {}, since = 0) {
     const old = this.get(agentId);
     const host = old?.host || this.host();
     const envSessionId = host === 'codex' || host === 'claude' ? undefined : process.env.ANTIGRAVITY_CONVERSATION_ID;
-    const antigravitySessionId = options.antigravitySessionId || old?.antigravitySessionId || envSessionId || undefined;
+    const rawSid = options.antigravitySessionId || old?.antigravitySessionId || envSessionId;
+    const antigravitySessionId = typeof rawSid === 'string' && sessionIdPattern.test(rawSid.trim()) ? rawSid.trim() : undefined;
     const delivered = Math.max(since, old?.antigravityDeliveredSeq || 0);
     const value = {
       agentId,
-      enabled: options.enabled ?? true,
+      enabled: options.enabled ?? old?.enabled ?? true,
       events: options.events || old?.events || defaultEvents,
       codexThreadId: options.codexThreadId || old?.codexThreadId || process.env.CODEX_THREAD_ID || undefined,
       antigravitySessionId,
@@ -103,15 +189,7 @@ export class Callbacks {
     return { ...value, routes: this.routes(value) };
   }
   markObserved(agentId, sequence, source = 'wait_agent') {
-    if (!sequence || !/^[0-9a-f-]{36}$/.test(agentId)) return null;
-    const old = this.get(agentId);
-    if (!old) return null;
-    const next = Math.max(old.antigravityDeliveredSeq || 0, sequence);
-    if (next <= (old.antigravityDeliveredSeq || 0)) return old;
-    old.antigravityDeliveredSeq = next;
-    old.lastObservedBy = source;
-    old.updatedAt = new Date().toISOString();
-    return this.save(agentId, old);
+    return advanceAntigravityCursor(this.root, agentId, sequence, { source });
   }
   handle(event) {
     const config = this.get(event.agentId);
@@ -141,17 +219,26 @@ export class Callbacks {
           error => resolve(error ? `failed: ${error.message.split('\n')[0]}` : 'queued'));
       });
     }
+    let cliDelivered = 0;
     if (routes.antigravityCli) {
       results.antigravityCli = await new Promise(resolve => {
         this.run(this.agyExecutable, ['--conversation', config.antigravitySessionId, '--mode', 'auto', '-p', content], { timeout: 30000, maxBuffer: 64 * 1024 },
           error => resolve(error ? `failed: ${error.message.split('\n')[0]}` : 'resumed'));
       });
-      if (results.antigravityCli === 'resumed') config.antigravityDeliveredSeq = Math.max(config.antigravityDeliveredSeq || 0, event.sequence);
+      if (results.antigravityCli === 'resumed') cliDelivered = event.sequence;
     } else if (routes.antigravityHook) {
       results.antigravityHook = 'pending_hook_or_watcher';
     }
-    config.lastDelivery = { sequence: event.sequence, type: event.type, time: new Date().toISOString(), results };
-    this.save(event.agentId, config);
+    const latest = this.get(event.agentId) || config;
+    const merged = {
+      ...latest,
+      since: Math.max(latest.since || 0, event.sequence),
+      antigravityDeliveredSeq: Math.max(latest.antigravityDeliveredSeq || 0, cliDelivered),
+      lastEvent: config.lastEvent,
+      lastDelivery: { sequence: event.sequence, type: event.type, time: new Date().toISOString(), results },
+      updatedAt: new Date().toISOString(),
+    };
+    this.save(event.agentId, merged);
     return results;
   }
 }

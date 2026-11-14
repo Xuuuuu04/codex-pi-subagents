@@ -1,23 +1,23 @@
 # CodeX 子代理拓展
 
-把本机 Pi 封装为 Codex 和 Claude Code 可调用的 MCP。Codex 负责拆分任务、选择模型和检查结果；Pi 会话执行开发包，使用自己已有的模型配置和凭据。
+把本机 Pi 封装为 Codex、Claude Code 和 Antigravity 可调用的 MCP。主会话负责拆分任务、选择模型和检查结果；Pi 会话执行开发包，使用自己已有的模型配置和凭据。
 
 ## 安装
 
-需要 Node.js 22.19+、Pi 1.0.2+ 和支持 MCP 的 Codex。先在 Pi 配好需要的模型与登录。
+需要 Node.js 22.19+、Pi 1.0.2+ 和支持 MCP 的客户端。先在 Pi 配好需要的模型与登录。
 
 ```bash
 npm ci --ignore-scripts
 npm run check
 npm test
-npm run install:all      # 或 install:codex / install:claude
+npm run install:all      # 同时接入 Codex、Claude Code 和 Antigravity；也可单独 install:codex / install:claude / install:antigravity
 ```
 
-安装器只配置名为 `pi-subagents` 的本地 MCP（Codex 写 `~/.codex/config.toml`，Claude Code 写用户级 `~/.claude.json`），启动命令使用绝对路径。原配置先保存到 `.agents/records/config-backups/`，权限为 600。安装目录需要保留；搬迁后在新目录重跑安装命令。
+安装器会配置名为 `pi-subagents` 的本地接入：Codex 写 `~/.codex/config.toml`，Claude Code 写 `~/.claude.json`，Antigravity 安装并启用本地插件 `~/.gemini/config/plugins/pi-subagents`（含 MCP、规则、技能与钩子）。原配置先保存到 `.agents/records/config-backups/`，权限为 600。安装目录需要保留；搬迁后在新目录重跑安装命令。
 
-升级只改客户端配置，不停止任何进程：已经打开的聊天继续使用旧桥接进程，独立管理进程和正在运行的 Pi 代理不受影响；新开的 Codex / Claude Code 会话加载新版本，并连接同一个管理进程接手自己的代理。
+升级只改客户端配置，不停止正在工作的子代理：已经打开的聊天继续使用旧桥接进程；新会话连接管理进程时，若旧控制进程脚本已过期且当前没有活跃子代理，会自动接替为新版控制进程。
 
-直接启动：`npm start`。卸载接入：`npm run uninstall:codex` 或 `npm run uninstall:claude`；这不会删除源码、Pi 凭据、开发成果或保存的会话。恢复配置时优先移除本 MCP；完整配置备份只有在确认没有后续其他配置改动时才适合覆盖。
+直接启动：`npm start`。卸载接入：`npm run uninstall:codex`、`npm run uninstall:claude` 或 `npm run uninstall:antigravity`；这不会删除源码、Pi 凭据、开发成果或保存的会话。恢复配置时优先移除本 MCP；完整配置备份只有在确认没有后续其他配置改动时才适合覆盖。
 
 ## 给 Codex 的使用示例
 
@@ -29,9 +29,9 @@ npm run install:all      # 或 install:codex / install:claude
 
 ## 会话面板
 
-在项目目录运行 `npm run dashboard`，直接打开 `http://127.0.0.1:3141/`。页面自动通过 HttpOnly、SameSite=Strict cookie 建立私密查看会话，无需 URL 令牌或旧标签页存储。面板服务重启后，已打开的新版页面会自动重新建立查看会话。
+在项目目录运行 `npm run dashboard`，直接打开 `http://127.0.0.1:3141/`。页面自动通过 HttpOnly、SameSite=Strict cookie 建立私密查看会话，遇到服务重启返回 401 时会自动刷新查看 cookie 重试。启动器通过 `dashboard.lock` 防止并发启动多个面板进程。
 
-面板排版参照 Codex 桌面端，三栏都可以调整：左右两栏拖动边线改宽度（双击恢复默认），`[` / `]` 收起或展开；窗口变窄时右侧面板变成浮层，手机宽度下左侧栏变成抽屉。左侧按父会话分组（新代理自动记录父会话的客户端、会话编号和目录），组内先列需要处理和正在工作的会话，已关闭的折叠起来；会话和分组都有右键菜单，可以标记已结束、关闭、移动到别的分组（也可以直接拖到分组标题上）、新建分组和重命名分组。中间是按轮次排列的对话，每轮过程折叠在「用时 X」下，读取技能和项目说明时显示专门的标签；底部状态条显示正在执行的工具和用时。右侧分三页：概况（状态、实时速度曲线和每次请求的速度柱、时间线、用量、最近报告）、上下文（占用环、按来源的构成、每次请求的增长曲线、系统提示各部分大小）、改动（Git 分支和提交、会话里出现过的 PR、文件列表和带行号的差异）。深浅两套配色都已适配。每 2 秒刷新列表，选中运行中的会话时每 0.8 秒刷新；只有内容变化才重画，避免动画反复播放。上报费用来自模型服务返回值，不是真实扣费。
+面板按三栏布局设计：左侧支持按宿主（Antigravity、Codex、Claude Code）与状态筛选、搜索框，并按父会话分组列出子代理；中间按轮次展示对话、`live.json` 实时流式输出与对话内搜索，每轮过程折叠在 "用时 X" 下；右侧分为五页（状态、速度、工具轨、上下文、改动），底部提供 "运行状态与额度" 弹窗（展示控制进程、活跃 `wait-events` 监听器、状态统计与 60 秒缓存的多服务额度）。深浅两套配色和 375px 窄屏抽屉都已适配。面板通过 `/api/events` SSE 实时推送并在断线时以 2 秒轮询兜底，只有摘要变化才重画局部组件；上报费用来自模型服务返回值，不是真实扣费。
 
 面板独立读取已有保存文件，不接手控制进程，不停止任务。当前已经运行的会话无需重启。后续默认 MCP 启动会自动启动或复用面板，`list_agents` 也返回面板链接。设置 `PI_DASHBOARD_AUTO=0` 可禁用自动启动；自定义运行目录使用 `PI_SUBAGENTS_STATE_DIR=/绝对路径 npm run dashboard` 单独打开，多个面板要通过 `PI_DASHBOARD_PORT` 指定不同端口。
 
@@ -70,8 +70,8 @@ npm run install:all      # 或 install:codex / install:claude
 | --- | --- |
 | `get_quota` | 直接用 Pi 凭据查询各家套餐额度或余额；默认查询已配置的支持服务，不依赖 CodexBar |
 | `list_models` | 从本机 Pi 获取已配置认证的模型，按服务和名称筛选；不返回凭据 |
-| `spawn_agent` | 创建会话，指定模型、思考强度、目录、文件范围和任务；立即返回身份 |
-| `list_agents` | 查看当前子代理；可额外列出以前保存的会话 |
+| `spawn_agent` | 创建会话，指定模型、思考强度、目录、文件范围、Antigravity 会话编号和任务；立即返回身份 |
+| `list_agents` | 查看当前子代理，支持按 `sessionId` 过滤；可额外列出以前保存的会话 |
 | `read_agent` | 状态、消息、实际用量、最近结果；可显式读取有限长度的会话内容 |
 | `send_message` | 追加任务、运行中指导，或等当前任务结束再执行 |
 | `reply_question` | 明确回答一个正在等待的子代理问题 |
@@ -80,6 +80,8 @@ npm run install:all      # 或 install:codex / install:claude
 | `interrupt_agent` | 清空旧指令队列并停止当前运行；已修改文件保留 |
 | `close_agent` | 停止并关闭进程，保留会话和工作目录 |
 | `resume_agent` | 显式接手保存会话或断线后仍在运行的会话；不重复之前的任务 |
+| `bind_session` | 把指定或当前宿主父会话的多个子代理绑定到指定会话编号，统一过滤和回调追踪 |
+| `get_subagent_health` | 检查本机 Pi、控制进程、模型数量和当前活跃子代理健康状态 |
 | `read_messages` / `ack_messages` | 读取持久消息与送达状态，明确确认已读 |
 | `update_agent_policy` | 经用户明确授权修改模型、网络和用量限制 |
 | `get_client_capabilities` | 查看客户端实际声明的协议能力和限制 |
@@ -90,7 +92,7 @@ npm run install:all      # 或 install:codex / install:claude
 
 `send_message` 的 `steer` 在当前模型回答和工具执行结束后的合适位置接收；`follow_up` 等当前工作完成再接收。`ask_parent` 正在等待时必须调用 `reply_question`；普通消息不会替代问题答复。
 
-**不要忘记等待**：`spawn_agent`、`send_message` 的返回里有 `mustWait` 提醒，`wait_agent` 的返回里有 `pending`（仍在工作）、`asking`（等待答复）和 `reminder`。主会话结束本轮回答后，MCP 无法再唤醒它，所以启动子代理后必须一直等到 completed、failed、interrupted 或 closed，确实要提前结束时要明确告诉用户子代理还在后台。Claude Code 还应把 `mustWait.claudeCode` 里给出的命令作为后台命令运行，事件到达会唤醒它。
+**不要忘记等待**：`spawn_agent`、`send_message` 的返回里有 `mustWait` 提醒，`wait_agent` 的返回里有 `pending`（仍在工作）、`asking`（等待答复）和 `reminder`。主会话结束本轮回答后，MCP 无法再唤醒它，所以启动子代理后必须一直等到 completed、failed、interrupted 或 closed，确实要提前结束时要明确告诉用户子代理还在后台。Claude Code 和 Antigravity 还应把 `mustWait` 里给出的后台 `wait-events` 命令跑起来，事件到达会唤醒主会话。
 
 每次 `wait_agent` 返回后，把各代理的 `nextSequence` 放入下一次的 `after[agentId]`，避免重复读取。工具执行进度也会使等待返回；继续检查 `status`，不要把一次工具返回当成开发包完成。
 
@@ -102,6 +104,7 @@ npm run install:all      # 或 install:codex / install:claude
 
 | 主会话 | 回调方式 |
 | --- | --- |
+| Antigravity | 创建或恢复时传 `antigravitySessionId`（或用 `bind_session` 绑定会话）。通过插件内置的 `PreInvocation` 和 `Stop` 钩子自动注入待处理事件，或按 `mustWait.antigravityBackgroundCommand` 在后台运行 `node scripts/wait-events.js --session <id>` 监听唤醒（并在 `watchers/*.json` 记录活跃心跳）；可选开启 `antigravityCliResume` 调用本机 `agy`。所有路径共享 `antigravityDeliveredSeq` 游标去重。 |
 | Codex | 先在 shell 运行 `echo $CODEX_THREAD_ID`，把结果作为 `callback.codexThreadId` 传给 `spawn_agent`（或之后用 `set_agent_callback`）。事件发生时桥接进程执行 `codex queue --thread <id> --message ...`，消息进入该聊天的队列。 |
 | Claude Code（channel） | 服务声明 `claude/channel` 能力并发送 `notifications/claude/channel`。只有以 channel 方式启用本服务的会话才会被唤醒，例如 `claude --dangerously-load-development-channels server:pi-subagents`。 |
 | Claude Code（通用） | 把 `npm run wait-events -- --agent <id>` 作为后台命令运行：事件到达时打印摘要并退出，Claude Code 随即被唤醒；配合 Monitor 可用 `--follow` 持续输出。只读保存文件，不需要 channel。 |

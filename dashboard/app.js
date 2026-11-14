@@ -1,5 +1,5 @@
 import {
-  el, statusLabel, agentHost, hostMeta, showToast, copyText,
+  el, statusLabel, agentHost, hostMeta, showToast, copyText, isWorking, agentSessionId, apiFetch,
 } from './dom.js';
 import { renderThread } from './conversation.js';
 import {
@@ -68,19 +68,8 @@ const state = {
 
 let eventsSource = null;
 let speedSource = null;
+let speedAgentId = null;
 let pollTimer = null;
-
-async function apiFetch(url, options = {}) {
-  const headers = new Headers(options.headers || {});
-  if (options.method === 'POST') {
-    headers.set('content-type', 'application/json');
-    headers.set('x-pi-dashboard', '1');
-  }
-  const res = await fetch(url, { ...options, headers });
-  const json = await res.json();
-  if (!res.ok) throw new Error(json.error || `HTTP ${res.status}`);
-  return json;
-}
 
 function setConn(text, kind) {
   dom.connection.textContent = text;
@@ -122,7 +111,7 @@ function renderMainHeader() {
     return;
   }
   const host = hostMeta(agentHost(agent));
-  const sid = agent.parentInfo?.sessionId || agent.callback?.antigravitySessionId;
+  const sid = agentSessionId(agent);
   dom.views.replaceChildren(
     el('span', { className: `badge status-${agent.status}` }, statusLabel(agent.status)),
     el('strong', { className: 'view-title' }, agent.name || agent.id.slice(0, 8)),
@@ -158,7 +147,7 @@ function renderActiveInspector() {
   } else if (state.tab === 'context') {
     renderContextPanel(dom.pContext, detail);
   } else if (state.tab === 'changes') {
-    renderChangesPanel(dom.pChanges, detail?.agent?.id || state.selectedId, state.changesCache, apiFetch);
+    renderChangesPanel(dom.pChanges, detail?.agent?.id || state.selectedId, state.changesCache, apiFetch, () => state.selectedId);
   }
 }
 
@@ -171,8 +160,13 @@ const sidebarHandlers = {
   onGroupMenu: (group, rect) => openGroupMenu(dom.menu, group, rect, {
     onRename: g => openRenameDialog(dom.dialog, g, state.groupNames[g.key], renameGroup),
     onBatchMark: async (items, status) => {
-      for (const item of items) await apiFetch(`/api/agents/${item.id}/mark`, { method: 'POST', body: JSON.stringify({ status }) });
-      await refreshNow();
+      try {
+        for (const item of items) await apiFetch(`/api/agents/${item.id}/mark`, { method: 'POST', body: JSON.stringify({ status }) });
+      } catch (error) {
+        showToast(error?.message || '批量标记失败');
+      } finally {
+        await refreshNow();
+      }
     },
   }),
 };
@@ -187,33 +181,49 @@ function renderAll() {
 }
 
 async function loadSelectedDetail(force = false) {
-  if (!state.selectedId) {
+  const targetId = state.selectedId;
+  if (!targetId) {
     state.detail = null;
     return;
   }
-  const snap = state.agents.find(a => a.id === state.selectedId);
-  const stamp = snap ? `${snap.id}:${snap.sequence}:${snap.status}:${snap.updatedAt}:${snap.marked}:${snap.movedTo}` : state.selectedId;
-  const working = snap && ['starting', 'running', 'finishing'].includes(snap.status);
+  const snap = state.agents.find(a => a.id === targetId);
+  const stamp = snap ? `${snap.id}:${snap.sequence}:${snap.status}:${snap.updatedAt}:${snap.marked}:${snap.movedTo}` : targetId;
+  const working = snap && isWorking(snap.status);
   if (!force && state.detailStamp === stamp && !working) return;
   try {
-    state.detail = await apiFetch(`/api/agents/${state.selectedId}`);
+    const detail = await apiFetch(`/api/agents/${targetId}`);
+    if (state.selectedId !== targetId) return;
+    state.detail = detail;
     state.detailStamp = stamp;
   } catch (error) {
-    if (error) state.detail = null;
+    if (state.selectedId !== targetId) return;
+    state.detail = snap
+      ? { agent: snap, messages: [], speeds: [], context: null, pullRequests: [], transcriptError: error.message }
+      : null;
   }
 }
 
 function syncSpeedStream() {
-  if (speedSource) { speedSource.close(); speedSource = null; }
-  state.liveSpeed = null;
   const agent = state.agents.find(a => a.id === state.selectedId);
-  if (!agent || !['starting', 'running', 'finishing'].includes(agent.status) || state.paused) return;
+  if (!agent || !isWorking(agent.status) || state.paused) {
+    if (speedSource) { speedSource.close(); speedSource = null; }
+    speedAgentId = null;
+    state.liveSpeed = null;
+    return;
+  }
+  if (speedSource && speedAgentId === agent.id && speedSource.readyState !== EventSource.CLOSED) return;
+  if (speedSource) { speedSource.close(); speedSource = null; }
+  speedAgentId = agent.id;
+  state.liveSpeed = null;
   speedSource = new EventSource(`/api/agents/${agent.id}/speed`);
   speedSource.onmessage = event => {
     try {
       state.liveSpeed = JSON.parse(event.data);
       if (state.tab === 'speed') renderSpeedPanel(dom.pSpeed, state.detail, state.liveSpeed, dom.tip);
-    } catch (error) { if (error) state.liveSpeed = null; }
+    } catch (error) {
+      state.liveSpeed = null;
+      console.error(error?.message || String(error));
+    }
   };
 }
 
@@ -254,6 +264,7 @@ async function refreshNow() {
 function stopLiveStreams() {
   if (eventsSource) { eventsSource.close(); eventsSource = null; }
   if (speedSource) { speedSource.close(); speedSource = null; }
+  speedAgentId = null;
   clearInterval(pollTimer);
   pollTimer = null;
 }
@@ -270,7 +281,10 @@ function startLiveStreams() {
   };
   eventsSource.onmessage = event => {
     try { applyListPayload(JSON.parse(event.data)); }
-    catch (error) { if (error) setConn('解析异常', 'err'); }
+    catch (error) {
+      setConn('解析异常', 'err');
+      console.error(error?.message || String(error));
+    }
   };
   eventsSource.onerror = () => {
     setConn('轮询中', 'poll');
@@ -312,7 +326,7 @@ function setupResizers() {
   }
 }
 
-function setupControls() {
+function setupButtons() {
   const savedTheme = localStorage.getItem('pi_dashboard_theme') || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   document.documentElement.dataset.theme = savedTheme;
   dom.theme.textContent = savedTheme === 'dark' ? '浅色' : '深色';
@@ -344,10 +358,21 @@ function setupControls() {
     dlg?.addEventListener('click', event => { if (event.target === dlg) dlg.close(); });
   }
   dom.sideToggle?.addEventListener('click', () => {
-    if (window.innerWidth <= 760) dom.app.classList.toggle('side-open');
-    else dom.app.classList.toggle('side-hidden');
+    if (window.innerWidth <= 760) {
+      dom.app.classList.remove('panel-open');
+      dom.app.classList.toggle('side-open');
+    } else {
+      dom.app.classList.toggle('side-hidden');
+    }
   });
-  dom.panelToggle?.addEventListener('click', () => dom.app.classList.toggle('panel-hidden'));
+  dom.panelToggle?.addEventListener('click', () => {
+    if (window.innerWidth <= 1180) {
+      dom.app.classList.remove('side-open');
+      dom.app.classList.toggle('panel-open');
+    } else {
+      dom.app.classList.toggle('panel-hidden');
+    }
+  });
 
   dom.search.addEventListener('input', () => { state.search = dom.search.value; renderSidebarList(dom, state, sidebarHandlers); });
   dom.threadSearch.addEventListener('input', () => { state.threadSearch = dom.threadSearch.value; renderThread(dom.records, state.detail, state.threadSearch); });
@@ -357,13 +382,19 @@ function setupControls() {
   }
   document.addEventListener('click', event => {
     if (!dom.menu.hidden && !dom.menu.contains(event.target)) dom.menu.hidden = true;
+    const t = event.target;
+    if (dom.app.classList.contains('side-open') && !t.closest('.side') && t !== dom.sideToggle) dom.app.classList.remove('side-open');
+    if (dom.app.classList.contains('panel-open') && !t.closest('.panel') && t !== dom.panelToggle) dom.app.classList.remove('panel-open');
   });
+}
 
+function setupKeyboard() {
   const tabs = ['status', 'speed', 'lane', 'context', 'changes'];
   document.addEventListener('keydown', event => {
     const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
     if (event.key === 'Escape') {
       dom.menu.hidden = true;
+      dom.app.classList.remove('side-open', 'panel-open');
       if (typing && document.activeElement.value) {
         document.activeElement.value = '';
         document.activeElement.dispatchEvent(new Event('input'));
@@ -387,6 +418,11 @@ function setupControls() {
       selectAgent(list[nextIdx].id);
     }
   });
+}
+
+function setupControls() {
+  setupButtons();
+  setupKeyboard();
 }
 
 setupResizers();
