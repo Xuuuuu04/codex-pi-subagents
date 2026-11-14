@@ -14,7 +14,8 @@
 - `npm run verify:live` 真实国模验证；`node scripts/verify-codex.js` 真实 Codex 接入验证。
 
 ## 目录地图
-- `src/server.js`：MCP 工具定义与启动。
+- `src/server.js`：MCP 工具定义与启动（含 23 个主会话工具）。
+- `src/model-profiles.js`、`src/provider-auth.js`、`src/model-settings.js`：内置模型能力画像、Pi 工具清单、服务商凭据脱敏与本机 Codex 登录同步（`sync_codex`）、`model-settings.json` / `models-catalog.json` 严格读写与基线保留、`auth.json` / `models.json` 0600 备份与原子更新和 `pi auth check` 封装。
 - `src/quota*.js`：读取 Pi 凭据，查询 Codex、GLM、MiniMax、DeepSeek 和 OpenCode Go 额度；固定服务地址，只返回明确字段。
 - `src/controller*.js`：独立管理进程、私密 Unix socket、主会话身份与重连。
 - `src/message-store.js`：持久消息、重复请求和已读确认。
@@ -27,7 +28,7 @@
 - `src/storage.js`：私密状态和事件保存。
 - `src/workspace.js`：文件范围、独立 Git 工作目录。
 - `src/callbacks.js`：桥接进程内的回调（Claude channel、`codex queue`、Antigravity `antigravityDeliveredSeq` 游标与事件扫描）；`src/agent-changes.js`：只读改动查看。
-- `src/dashboard*.js`、`dashboard/`：面板数据（含上下文分析、PR 链接、系统状态与 watcher 检测）、私密本机服务（SSE `/api/events`、`/api/system`、60 秒缓存 `/api/quota`）、`dashboard.lock` 并发启动与模块化前端；`dashboard/conversation.js` 渲染实时对话，`dashboard/charts.js` 是无依赖的 SVG 图表。
+- `src/dashboard*.js`、`dashboard/`：面板数据（含上下文分析、PR 链接、系统状态与 watcher 检测）、私密本机服务（SSE `/api/events`、`/api/system`、60 秒缓存 `/api/quota` 与 `/api/settings*`）、`dashboard.lock` 并发启动与模块化前端；`dashboard/conversation.js` 渲染实时对话，`dashboard/charts.js` 是无依赖的 SVG 图表，`dashboard/settings*.js` 负责左下角设置弹窗。
 - `src/live-stream.js`：管理进程把正在生成的消息和工具输出写入会话目录的 `live.json`，仅供面板读取。
 - `extensions/policy.ts`：实际文件/shell 限制、启动确认与请求前检查。
 - `extensions/communication.ts`：子代理可调用的报告和提问工具。
@@ -54,7 +55,8 @@ Codex 调用 MCP → 私密 Unix socket → 独立管理器创建或控制 Pi �
 - MCP 断开仅断开主会话；close_agent 才关闭指定 Pi。管理进程退出后显式恢复，不重复旧任务。
 - 消息接受、进入模型上下文、主会话确认已读和业务完成是不同状态。
 - 新会话只加载两个指定扩展；权限扩展没有确认启动时不得发送任务。
-- 面板不调用代理控制命令，不停止或接手任何代理；写操作只有手动标记（已结束/已关闭）、移动分组和分组改名，只写面板自己的 `dashboard-marks.json`，只改变显示，正在工作的会话不能标记。改动页在代理目录只读执行 git。上下文窗口来自管理进程写出的 `models-catalog.json`。缺少活跃控制进程的工作状态明确显示离线。
+- 面板不调用代理控制命令，不停止或接手任何代理；会话显示整理仅写 `dashboard-marks.json`（已结束/已关闭、移动分组、分组改名），正在工作的会话不能标记；配置管理仅通过 `/api/settings*` 更新模型启用状态、上下文与能力描述、默认策略，以及经用户确认的 Pi 服务商 Key、Base URL 或本机 Codex OAuth 导入（写 `auth.json` 和 `models.json` 前先以 0600 备份，接口按字段白名单校验且仅返回脱敏状态，禁止向浏览器或 MCP 工具暴露明文 Key 或 OAuth token）。缺少活跃控制进程的工作状态明确显示离线。
+- `list_models` 与 `get_model_profiles` 返回含上下文窗口与能力描述的目录（默认隐藏已禁用项），`spawn_agent` 拒绝已禁用模型或服务商并将设置中的默认 `thinking`、`allowNetwork`、`sandboxMode`、`loadSkills` 与 `loadContextFiles` 固化进会话记录；刷新目录时保留原始 `baseContextWindow`/`baseMaxTokens` 恢复基线。
 - 面板左侧先按父会话分组：创建代理时桥接进程自报客户端类型、会话编号（Codex 的 `CODEX_THREAD_ID`、Claude Code 的 `CLAUDE_CODE_SESSION_ID`、Antigravity 的 `ANTIGRAVITY_CONVERSATION_ID` 或显式 `antigravitySessionId`）和所在目录，记在代理记录的 `parentInfo`；旧代理没有这项，面板按 `parentId` 分开并用工作目录推断。
 - Antigravity 会话通过 `spawn_agent.antigravitySessionId` 或 `bind_session` 关联；回调、插件钩子（`PreInvocation`、`Stop`）、`wait-events --session`、`read_agent` 和 `wait_agent` 共用 `antigravityDeliveredSeq` 去重，且仅按子集过滤 `--events` 时不会跳过未投递的默认回调事件。
 

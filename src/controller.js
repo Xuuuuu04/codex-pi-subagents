@@ -135,7 +135,7 @@ function bindSession(parentId, parent, v) {
 async function dispatch(parentId, method, v) {
   if (method === 'health') {
     const activeAgents = [...manager.agents.values()].filter(a => activeAgentStatuses.has(a.record.status)).length;
-    return { service: 'pi-controller', pid: process.pid, scriptPath: controllerScriptPath, activeAgents, totalAgents: manager.agents.size };
+    return { service: 'pi-controller', pid: process.pid, scriptPath: controllerScriptPath, piAgentDir: process.env.PI_CODING_AGENT_DIR || '', activeAgents, totalAgents: manager.agents.size };
   }
   if (method === 'attach') {
     const identity = normalizeParentInfo(v.parent, parents.get(parentId)?.identity);
@@ -156,7 +156,7 @@ async function dispatch(parentId, method, v) {
     if (agent) { agent.record.parentId = parentId; agent.record.parentInfo = parents.get(parentId)?.identity; manager.storage.save(agent.record); }
     return value;
   }
-  if (method === 'models') return manager.models(v.provider);
+  if (method === 'models') return manager.models(v.provider, { includeDisabled: Boolean(v.includeDisabled) });
   if (method === 'spawn') return once(parentId, v.requestId, { method, ...v }, () => manager.spawn({ ...v, parentId, parentInfo: parents.get(parentId)?.identity }));
   if (method === 'list') {
     const all = manager.list(v.includeSaved);

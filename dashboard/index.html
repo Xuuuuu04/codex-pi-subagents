@@ -37,7 +37,8 @@
         <div class="dist" id="dist" aria-label="会话状态分布"></div>
         <div class="totals" id="totals"></div>
         <div class="side-actions">
-          <button type="button" class="btn btn-xs" id="sys-btn">运行状态与额度</button>
+          <button type="button" class="btn btn-xs" id="settings-btn" title="模型、Key 与子代理工具设置 (,)">设置</button>
+          <button type="button" class="btn btn-xs" id="sys-btn">状态与额度</button>
           <button type="button" class="btn btn-xs" id="notify" title="等待答复时发送桌面通知">通知</button>
           <button type="button" class="btn btn-xs" id="theme" title="切换深浅色主题">深色</button>
           <button type="button" class="btn btn-xs" id="pause" title="暂停实时更新 (P)">暂停</button>
@@ -97,6 +98,7 @@
   <div class="menu" id="menu" role="menu" hidden></div>
   <dialog class="dialog" id="dialog"></dialog>
   <dialog class="dialog" id="sys-dialog"></dialog>
+  <dialog class="dialog" id="settings-dialog"></dialog>
   <dialog class="dialog" id="help-dialog">
     <div class="dialog-box">
       <div class="dialog-head">
@@ -109,10 +111,11 @@
           <div class="kv-row"><span><kbd>j</kbd> / <kbd>k</kbd></span><span>切换下一条 / 上一条子代理</span></div>
           <div class="kv-row"><span><kbd>[</kbd> / <kbd>]</kbd></span><span>切换右侧详情标签页</span></div>
           <div class="kv-row"><span><kbd>p</kbd></span><span>暂停或恢复实时推送</span></div>
+          <div class="kv-row"><span><kbd>,</kbd></span><span>打开模型、Key 与子代理设置</span></div>
           <div class="kv-row"><span><kbd>?</kbd></span><span>打开或关闭本说明窗口</span></div>
           <div class="kv-row"><span><kbd>Esc</kbd></span><span>关闭弹窗、菜单或清空聚焦搜索</span></div>
         </div>
-        <p class="muted help-note">面板只读查看本机记录；手动标记与分组整理仅保存在面板自有配置文件中，不停止或接管任何运行中的子代理。</p>
+        <p class="muted help-note">面板默认只读查看子代理运行记录；分组与状态标记保存在面板自有文件，设置弹窗中的模型、策略与凭据修改会先经 0600 备份后写入对应配置。</p>
       </div>
     </div>
   </dialog>

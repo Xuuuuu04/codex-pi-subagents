@@ -13,6 +13,7 @@ import {
 import {
   visibleAgents, renderHeaderAndChips, renderSidebarList,
 } from './sidebar.js';
+import { openSettingsDialog } from './settings.js';
 
 const dom = {
   app: document.getElementById('app'),
@@ -26,6 +27,7 @@ const dom = {
   totals: document.getElementById('totals'),
   connection: document.getElementById('connection'),
   notify: document.getElementById('notify'),
+  settingsBtn: document.getElementById('settings-btn'),
   sysBtn: document.getElementById('sys-btn'),
   helpBtn: document.getElementById('help-btn'),
   theme: document.getElementById('theme'),
@@ -45,6 +47,7 @@ const dom = {
   menu: document.getElementById('menu'),
   dialog: document.getElementById('dialog'),
   sysDialog: document.getElementById('sys-dialog'),
+  settingsDialog: document.getElementById('settings-dialog'),
   helpDialog: document.getElementById('help-dialog'),
 };
 
@@ -187,7 +190,7 @@ async function loadSelectedDetail(force = false) {
     return;
   }
   const snap = state.agents.find(a => a.id === targetId);
-  const stamp = snap ? `${snap.id}:${snap.sequence}:${snap.status}:${snap.updatedAt}:${snap.marked}:${snap.movedTo}` : targetId;
+  const stamp = snap ? `${snap.id}:${snap.sequence}:${snap.status}:${snap.updatedAt}:${snap.marked}:${snap.movedTo}:${snap.contextWindow || ''}` : targetId;
   const working = snap && isWorking(snap.status);
   if (!force && state.detailStamp === stamp && !working) return;
   try {
@@ -351,10 +354,11 @@ function setupButtons() {
     showToast(perm === 'granted' ? '已开启提问桌面通知' : '未获得通知权限');
   });
 
+  dom.settingsBtn.addEventListener('click', () => openSettingsDialog(dom.settingsDialog, apiFetch, () => refreshNow()));
   dom.sysBtn.addEventListener('click', () => renderSystemDialog(dom.sysDialog, apiFetch, false));
   dom.helpBtn.addEventListener('click', () => dom.helpDialog.showModal());
   dom.helpDialog.querySelector('[data-close]')?.addEventListener('click', () => dom.helpDialog.close());
-  for (const dlg of [dom.dialog, dom.sysDialog, dom.helpDialog]) {
+  for (const dlg of [dom.dialog, dom.sysDialog, dom.settingsDialog, dom.helpDialog]) {
     dlg?.addEventListener('click', event => { if (event.target === dlg) dlg.close(); });
   }
   dom.sideToggle?.addEventListener('click', () => {
@@ -391,7 +395,7 @@ function setupButtons() {
 function setupKeyboard() {
   const tabs = ['status', 'speed', 'lane', 'context', 'changes'];
   document.addEventListener('keydown', event => {
-    const typing = ['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName);
+    const typing = ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName);
     if (event.key === 'Escape') {
       dom.menu.hidden = true;
       dom.app.classList.remove('side-open', 'panel-open');
@@ -401,9 +405,10 @@ function setupKeyboard() {
       }
       return;
     }
-    const modalOpen = dom.dialog.open || dom.sysDialog.open || dom.helpDialog.open;
+    const modalOpen = dom.dialog.open || dom.sysDialog.open || dom.settingsDialog.open || dom.helpDialog.open;
     if (typing || modalOpen || event.metaKey || event.ctrlKey || event.altKey) return;
     if (event.key === '/') { event.preventDefault(); dom.search.focus(); }
+    else if (event.key === ',') { event.preventDefault(); dom.settingsBtn.click(); }
     else if (event.key === '?') { event.preventDefault(); dom.helpDialog.showModal(); }
     else if (event.key === 'p') dom.pause.click();
     else if (event.key === '[' || event.key === ']') {

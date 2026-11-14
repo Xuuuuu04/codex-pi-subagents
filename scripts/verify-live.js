@@ -38,8 +38,8 @@ const done = id => waitUntil(id, r => terminal.has(r.agent.status)).then(r => {
 });
 try {
   await client.connect(transport);
-  assert.equal((await client.listTools()).tools.length, 18);
-  record('MCP handshake', '18 tools discovered over real stdio');
+  assert.equal((await client.listTools()).tools.length, 23);
+  record('MCP handshake', '23 tools discovered over real stdio');
   for (const provider of ['zhipu', 'deepseek', 'minimax-tokenplan', 'opencode-go']) {
     const models = await call('list_models', { provider });
     assert.ok(models.models.length); record('Model discovery', `${provider}: ${models.models.length}`);

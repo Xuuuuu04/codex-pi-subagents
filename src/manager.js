@@ -12,6 +12,7 @@ import { MessageStore } from './message-store.js';
 import { agentPolicy, assertModelAllowed, reserveRequest } from './agent-policy.js';
 import { sandboxProfile, canonicalPath } from './tool-sandbox.js';
 import { createWorkspace, resolveWorkspaceMode, validateOwnedPaths, pathsOverlap } from './workspace.js';
+import { catalogFilesStamp, enrichModels, fetchPiRawModels, readModelSettings } from './model-settings.js';
 
 const extension = fileURLToPath(new URL('../extensions/communication.ts', import.meta.url));
 export const maxAgentLimit = 50;
@@ -21,12 +22,13 @@ const textOf = message => (message?.content || []).filter(block => block.type ==
 
 /** Own Pi processes, durable sessions, model changes and events for an independent controller. */
 export class Manager extends EventEmitter {
-  constructor({ root, executable = 'pi', maxAgents = defaultMaxAgents, processFactory = options => new PiProcess(options) }) {
+  constructor({ root, executable = 'pi', maxAgents = defaultMaxAgents, piAgentDir = process.env.PI_CODING_AGENT_DIR, processFactory = options => new PiProcess(options) }) {
     super();
     if (!Number.isInteger(maxAgents) || maxAgents < 1 || maxAgents > maxAgentLimit) throw new Error(`maxAgents must be an integer from 1 to ${maxAgentLimit}`);
     this.storage = new Storage(root);
     this.executable = executable;
     this.maxAgents = maxAgents;
+    this.piAgentDir = piAgentDir;
     this.processFactory = processFactory;
     this.owner = randomUUID();
     this.messages = new MessageStore(this.storage);
@@ -34,6 +36,7 @@ export class Manager extends EventEmitter {
     this.channel = new MessageChannel(this);
     this.closed = false;
     this.catalog = null;
+    this.catalogStamp = '';
   }
   async start() { await this.channel.start(); return this; }
   get(id) {
@@ -71,27 +74,33 @@ export class Manager extends EventEmitter {
     if (this.closed) throw new Error('Controller is shutting down');
     if ([...this.agents.values()].filter(a => a.rpc && !a.rpc.exited).length >= this.maxAgents) throw new Error(`Agent limit reached (${this.maxAgents}). Close an idle agent first.`);
   }
-  async models(provider) {
-    if (!this.catalog) {
+  async models(provider, { includeDisabled = false } = {}) {
+    const stamp = catalogFilesStamp(this.storage.root, this.piAgentDir);
+    if (!this.catalog || stamp !== this.catalogStamp) {
+      this.catalogStamp = stamp;
       this.catalog = (async () => {
-        const rpc = this.processFactory({ executable: this.executable, args: ['--mode', 'rpc', '--no-session', '--offline', '--no-extensions'], cwd: this.storage.root });
+        const models = await fetchPiRawModels({
+          executable: this.executable,
+          cwd: this.storage.root,
+          agentDir: this.piAgentDir,
+          processFactory: this.processFactory,
+        });
         try {
-          const models = (await rpc.command('get_available_models')).models;
-          try {
-            atomicWriteJson(path.join(this.storage.root, 'models-catalog.json'), models.map(m => ({ provider: m.provider, model: m.id, name: m.name, contextWindow: m.contextWindow, maxTokens: m.maxTokens })));
-          } catch (error) {
-            if (error?.code !== 'ENOENT') process.stderr.write(`Catalog write failed: ${error.message}\n`);
-          }
-          return models;
+          atomicWriteJson(path.join(this.storage.root, 'models-catalog.json'), enrichModels(models, this.storage.root, { includeDisabled: true }));
+        } catch (error) {
+          if (error?.code !== 'ENOENT') process.stderr.write(`Catalog write failed: ${error.message}\n`);
         }
-        finally { await rpc.close(); }
-      })().catch(error => { this.catalog = null; throw error; });
+        return models;
+      })().catch(error => { this.catalog = null; this.catalogStamp = ''; throw error; });
     }
     const all = await this.catalog;
-    return all.filter(m => !provider || m.provider === provider).map(m => ({ provider: m.provider, model: m.id, name: m.name, reasoning: m.reasoning, contextWindow: m.contextWindow, maxTokens: m.maxTokens, input: m.input, cost: m.cost }));
+    return enrichModels(all, this.storage.root, { includeDisabled }).filter(m => !provider || m.provider === provider);
   }
   async validateModel(model) {
-    if (!(await this.models(model.provider)).some(m => m.model === model.model)) throw new Error(`Model is unavailable: ${model.provider}/${model.model}`);
+    const listed = await this.models(model.provider, { includeDisabled: true });
+    const match = listed.find(m => m.model === model.model);
+    if (!match) throw new Error(`Model is unavailable: ${model.provider}/${model.model}`);
+    if (!match.enabled) throw new Error(`Model is disabled in settings: ${model.provider}/${model.model}`);
   }
   claim(record) {
     const lock = path.join(this.storage.directory(record.id), 'owner.lock');
@@ -107,7 +116,7 @@ export class Manager extends EventEmitter {
     record.owner = this.owner; record.ownerPid = process.pid;
     return lock;
   }
-  async spawn({ cwd, prompt, provider, model, name, ownedPaths, workspaceMode = 'auto', baseRef, thinking = 'high', context = '', parentId, parentInfo, parentSession, antigravitySessionId, policy }) {
+  async spawn({ cwd, prompt, provider, model, name, ownedPaths, workspaceMode = 'auto', baseRef, thinking, context = '', parentId, parentInfo, parentSession, antigravitySessionId, policy }) {
     if (!path.isAbsolute(cwd)) throw new Error('cwd must be an absolute directory path');
     this.capacity(); await this.validateModel({ provider, model }); this.capacity();
     const paths = validateOwnedPaths(ownedPaths);
@@ -122,9 +131,16 @@ export class Manager extends EventEmitter {
       }
     }
     const id = randomUUID();
+    const settingsDefaults = readModelSettings(this.storage.root).defaults;
+    const effectiveThinking = thinking || settingsDefaults.thinking;
+    const effectivePolicy = {
+      ...(policy || {}),
+      ...(policy?.allowNetwork === undefined ? { allowNetwork: settingsDefaults.allowNetwork } : {}),
+      ...(policy?.sandboxMode === undefined && settingsDefaults.sandboxMode ? { sandboxMode: settingsDefaults.sandboxMode } : {}),
+    };
     const explicitParent = antigravitySessionId ? { kind: 'antigravity', sessionId: antigravitySessionId, cwd: original } : parentSession ? { ...parentSession, cwd: parentSession.cwd || original } : null;
     const resolvedParentInfo = normalizeParentInfo(explicitParent, parentInfo);
-    const record = { id, parentId, parentInfo: resolvedParentInfo, policy: agentPolicy(policy, { provider, model }), modelRequests: 0, name: name || id.slice(0, 8), model: { provider, model }, thinking, ownedPaths: paths, context,
+    const record = { id, parentId, parentInfo: resolvedParentInfo, policy: agentPolicy(effectivePolicy, { provider, model }), modelRequests: 0, name: name || id.slice(0, 8), model: { provider, model }, thinking: effectiveThinking, loadSkills: settingsDefaults.loadSkills, loadContextFiles: settingsDefaults.loadContextFiles, ownedPaths: paths, context,
       status: 'starting', sequence: 0, questionIds: [], createdAt: new Date().toISOString(), usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reportedCost: 0 } };
     const lock = this.claim(record);
     try {
@@ -158,8 +174,11 @@ export class Manager extends EventEmitter {
     const instructions = `You are an external Pi subagent controlled by parent Codex. Your ID: ${r.id}.\nOwned paths: ${r.ownedPaths.join(', ')}. Do not edit siblings' files or revert others' changes. Your directory is ${r.workspace.cwd}. File tools and shell descendants are restricted to the assigned workspace and owned paths. Shell networking is disabled unless explicitly authorized.\nUse agent_message(recipient="parent", message=...) for important progress. Use ask_parent for unresolved blocking decisions; its tool result is the parent's answer. Finish with changed files, checks actually run, remaining issues. Never claim tests passed without running them. Do not deploy or send external messages without explicit parent authorization.\nProvided context:\n${r.context}`;
     const args = ['--mode', 'rpc', '--offline', '--provider', r.model.provider, '--model', r.model.model, '--thinking', r.thinking,
       '--no-extensions', '--extension', extension, '--extension', fileURLToPath(new URL('../extensions/policy.ts', import.meta.url)), '--append-system-prompt', instructions, '--session-dir', path.join(this.storage.directory(r.id), 'sessions')];
+    if (r.loadSkills === false) args.push('--no-skills');
+    if (r.loadContextFiles === false) args.push('--no-context-files');
     if (r.sessionFile) args.push('--session', r.sessionFile);
     agent.rpc = this.processFactory({ executable: this.executable, args, cwd: r.workspace.cwd, env: {
+      ...(this.piAgentDir ? { PI_CODING_AGENT_DIR: this.piAgentDir } : {}),
       PI_SUBAGENT_POLICY: policyFile, PI_SUBAGENT_ID: r.id, PI_SUBAGENT_ENDPOINT: this.channel.endpoint, PI_SUBAGENT_TOKEN: agent.messageToken,
     } });
     r.piPid = agent.rpc.child.pid;

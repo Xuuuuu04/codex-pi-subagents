@@ -63,7 +63,7 @@ export class ControllerClient extends EventEmitter {
       request.on('error', reject); request.end(JSON.stringify({ parentId: this.parentId, method, values }));
     });
   }
-  models(provider) { return this.call('models', { provider }); }
+  models(provider, options = {}) { return this.call('models', { provider, ...options }); }
   spawn(values) { return this.call('spawn', values); }
   list(includeSaved) { return this.call('list', { includeSaved }); }
   read(agentId, afterSequence = 0, limit = 50) { return this.call('read', { agentId, afterSequence, limit }); }
@@ -106,7 +106,7 @@ export class ControllerClient extends EventEmitter {
   }
 }
 
-async function probe(root) {
+async function probe(root, piAgentDir) {
   const info = readJsonSafe(path.join(root, 'controller.json'));
   if (!info?.socket) return null;
   let health;
@@ -117,19 +117,24 @@ async function probe(root) {
     }
     throw error;
   }
-  if (health?.scriptPath && !fs.existsSync(health.scriptPath) && (health.activeAgents ?? 0) === 0 && (health.totalAgents ?? 0) === 0) {
+  const expectedAgentDir = piAgentDir || process.env.PI_CODING_AGENT_DIR || '';
+  const stalePath = health?.scriptPath && !fs.existsSync(health.scriptPath);
+  const wrongAgentDir = health?.piAgentDir !== undefined && health.piAgentDir !== expectedAgentDir;
+  if ((stalePath || wrongAgentDir) && (health.activeAgents ?? 0) === 0 && (health.totalAgents ?? 0) === 0) {
     try { process.kill(info.pid, 'SIGTERM'); } catch (error) { if (error.code !== 'ESRCH') throw error; }
     for (let i = 0; i < 30 && processAlive(info.pid); i++) await new Promise(resolve => setTimeout(resolve, 50));
     return null;
   }
   return info;
 }
-export async function connectController({ root, executable = 'pi', maxAgents = defaultMaxAgents }) {
+export async function connectController({ root, executable = 'pi', maxAgents = defaultMaxAgents, piAgentDir }) {
   fs.mkdirSync(root, { recursive: true, mode: 0o700 });
-  let info = await probe(root);
+  let info = await probe(root, piAgentDir);
   if (!info) {
     const log = fs.openSync(path.join(root, 'controller.log'), 'a', 0o600);
-    const child = spawn(process.execPath, [script], { detached: true, stdio: ['ignore', log, log], env: { ...process.env, PI_SUBAGENTS_STATE_DIR: root, PI_EXECUTABLE: executable, PI_SUBAGENTS_MAX_AGENTS: String(maxAgents) } });
+    const env = { ...process.env, PI_SUBAGENTS_STATE_DIR: root, PI_EXECUTABLE: executable, PI_SUBAGENTS_MAX_AGENTS: String(maxAgents) };
+    if (piAgentDir) env.PI_CODING_AGENT_DIR = piAgentDir;
+    const child = spawn(process.execPath, [script], { detached: true, stdio: ['ignore', log, log], env });
     fs.closeSync(log); child.unref(); let failure; child.on('error', error => { failure = error; });
     for (let index = 0; index < 50; index++) {
       info = await probe(root); if (info) break;

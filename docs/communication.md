@@ -1,6 +1,6 @@
 # 可靠通信与权限
 
-1.6.0 使用 MCP SDK 1.26.0，提供 22 个主会话工具（在原有 20 个工具基础上新增 `bind_session` 与 `get_subagent_health`），支持 MCP 2025-11-25 的资源订阅、日志、进度和实验性 Tasks。没有适用于所有代理系统的统一认证；协议兼容、实际行为检查和客户端能力分别记录。
+1.6.0 使用 MCP SDK 1.26.0，提供 23 个主会话工具（在原有 20 个工具基础上新增 `bind_session`、`get_subagent_health` 与 `get_model_profiles`），支持 MCP 2025-11-25 的资源订阅、日志、进度和实验性 Tasks。没有适用于所有代理系统的统一认证；协议兼容、实际行为检查和客户端能力分别记录。
 
 ## 消息与恢复
 
@@ -25,7 +25,7 @@
 | `maxRuntimeMs` | 每次工作 7 天，含等待答复 |
 | `maxOutputTokens` | 已支持请求格式的输出上限 128,000 |
 | `sandboxMode` | 未设置时读 `.agents/sandbox.json`，再默认 strict；可选 strict、dev、bypass |
-| `allowNetwork` | true，shell 默认可以联网，需要时可设为 false 关闭；模型与通信由可信 Pi 主进程处理 |
+| `allowNetwork` | true，shell 默认可以联网，需要时可在单代理 `policy` 或设置中心关闭；模型与通信由可信 Pi 主进程处理，且 `thinking`、`allowNetwork`、`sandboxMode`、`loadSkills`、`loadContextFiles` 默认值会在创建时固化进代理记录 |
 
 请求次数在请求前批准并保存，下一次达到限制就停止 Pi；Pi 会忽略扩展抛出的请求前异常，因此扩展使用进程退出阻止实际发送。运行超时会中止工作并关闭进程。token 是已经返回的用量，一次正在执行的请求可能超出阈值；服务商内部重试、实际账单和套餐扣减无法仅靠这个计数严格限制。
 

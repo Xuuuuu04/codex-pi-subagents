@@ -7,11 +7,41 @@ import { DashboardData, defaultDashboardPort, parseDashboardPort, readRunningDas
 import { agentChanges } from './agent-changes.js';
 import { getProviderQuota } from './quota-providers.js';
 import { atomicWriteJson } from './storage.js';
+import {
+  buildSettingsPayload,
+  checkProviderAuth,
+  refreshPiCatalog,
+  saveModelSettings,
+  updateProviderAuth,
+} from './model-settings.js';
 
 export { defaultDashboardPort };
 const currentScript = fileURLToPath(import.meta.url);
 const assets = fileURLToPath(new URL('../dashboard/', import.meta.url));
 const quotaCacheTtlMs = 60_000;
+const ASSET_FILES = new Map([
+  ['/', ['index.html', 'text/html']],
+  ['/app.js', ['app.js', 'text/javascript']],
+  ['/dom.js', ['dom.js', 'text/javascript']],
+  ['/panels.js', ['panels.js', 'text/javascript']],
+  ['/dialogs.js', ['dialogs.js', 'text/javascript']],
+  ['/settings.js', ['settings.js', 'text/javascript']],
+  ['/settings-views.js', ['settings-views.js', 'text/javascript']],
+  ['/sidebar.js', ['sidebar.js', 'text/javascript']],
+  ['/conversation.js', ['conversation.js', 'text/javascript']],
+  ['/charts.js', ['charts.js', 'text/javascript']],
+  ['/style.css', ['style.css', 'text/css']],
+]);
+
+async function safeRefreshCatalog({ root, executable, agentDir }) {
+  try {
+    await refreshPiCatalog({ stateRoot: root, executable, agentDir });
+    return null;
+  } catch (error) {
+    console.error(error?.message || String(error));
+    return error?.message || String(error);
+  }
+}
 
 function writeSse(response, payload, cleanup) {
   if (response.writableEnded || response.destroyed) {
@@ -186,24 +216,117 @@ function sendResponse(response, status, body, contentType = 'application/json') 
   response.end(contentType === 'application/json' ? JSON.stringify(body) : body);
 }
 
-function handlePostRequest(request, url, site, data, send) {
-  if (request.headers['x-pi-dashboard'] !== '1' || site === 'cross-site') { send(403, { error: 'Invalid request' }); return; }
-  const write = /^\/api\/agents\/([^/]+)\/(mark|move)$/.exec(url.pathname);
-  if (!write && url.pathname !== '/api/groups') { send(404, { error: 'Not found' }); return; }
-  let body = '';
-  request.on('data', chunk => { body += chunk; if (body.length > 2000) request.destroy(); });
-  request.on('end', () => {
-    try {
-      const value = JSON.parse(body || '{}');
-      send(200, !write ? data.renameGroup(value.key, value.name ?? null) : write[2] === 'mark' ? data.mark(write[1], value.status ?? null) : data.move(write[1], value.group ?? null));
-    } catch (error) { send(400, { error: error.message }); }
+function readJsonBody(request, limit = 64000) {
+  return new Promise((resolve, reject) => {
+    let body = '';
+    let size = 0;
+    let settled = false;
+    request.on('data', chunk => {
+      if (settled) return;
+      size += Buffer.byteLength(chunk);
+      if (size > limit) {
+        settled = true;
+        request.destroy();
+        reject(Object.assign(new Error('请求体过大'), { status: 413 }));
+        return;
+      }
+      body += chunk;
+    });
+    request.on('end', () => {
+      if (settled) return;
+      settled = true;
+      try { resolve(JSON.parse(body || '{}')); }
+      catch (error) { reject(Object.assign(new Error(error.message), { status: 400 })); }
+    });
+    request.on('error', error => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    });
   });
 }
 
-function handleGetRequest({ request, response, url, root, data, cleanups, readCachedQuota, send }) {
+async function handlePostRequest({ request, url, site, data, root, agentDir, backupDir, executable, autoRefreshCatalog, send }) {
+  if (request.headers['x-pi-dashboard'] !== '1' || site === 'cross-site') { send(403, { error: 'Invalid request' }); return; }
+  const write = /^\/api\/agents\/([^/]+)\/(mark|move)$/.exec(url.pathname);
+  const allowed = write || ['/api/groups', '/api/settings', '/api/settings/provider-auth', '/api/settings/check-auth'].includes(url.pathname);
+  if (!allowed) { send(404, { error: 'Not found' }); return; }
+  try {
+    const value = await readJsonBody(request);
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      send(400, { error: '请求体必须为 JSON 对象' });
+      return;
+    }
+    if (write) {
+      send(200, write[2] === 'mark' ? data.mark(write[1], value.status ?? null) : data.move(write[1], value.group ?? null));
+      return;
+    }
+    if (url.pathname === '/api/groups') { send(200, data.renameGroup(value.key, value.name ?? null)); return; }
+    if (url.pathname === '/api/settings') {
+      saveModelSettings(root, value, { agentDir, backupDir });
+      send(200, buildSettingsPayload({ stateRoot: root, agentDir }));
+      return;
+    }
+    if (url.pathname === '/api/settings/provider-auth') {
+      const payload = updateProviderAuth({
+        provider: value.provider,
+        action: value.action,
+        apiKey: value.apiKey,
+        baseUrl: value.baseUrl,
+        enabled: value.enabled,
+        stateRoot: root,
+        agentDir,
+        backupDir,
+      });
+      if (autoRefreshCatalog && ['set_key', 'clear_key', 'sync_codex'].includes(value.action)) {
+        const catalogRefreshError = await safeRefreshCatalog({ root, executable, agentDir });
+        send(200, {
+          ...buildSettingsPayload({ stateRoot: root, agentDir }),
+          ...(catalogRefreshError ? { catalogRefreshError } : {}),
+        });
+        return;
+      }
+      send(200, payload);
+      return;
+    }
+    if (url.pathname === '/api/settings/check-auth') {
+      const checked = await checkProviderAuth({ stateRoot: root, executable, agentDir, provider: value.provider });
+      const catalogRefreshError = checked.ok && autoRefreshCatalog
+        ? await safeRefreshCatalog({ root, executable, agentDir })
+        : null;
+      send(200, {
+        ...checked,
+        settings: {
+          ...buildSettingsPayload({ stateRoot: root, agentDir }),
+          ...(catalogRefreshError ? { catalogRefreshError } : {}),
+        },
+      });
+      return;
+    }
+  } catch (error) {
+    send(error.status || 400, { error: error.message });
+  }
+}
+
+function handleGetRequest({ request, response, url, root, data, cleanups, readCachedQuota, agentDir, executable, autoRefreshCatalog, send }) {
   if (url.pathname === '/api/health') { send(200, { service: 'pi-dashboard', pid: process.pid, scriptPath: currentScript }); return; }
   if (url.pathname === '/api/agents') { send(200, data.list()); return; }
   if (url.pathname === '/api/system') { send(200, data.systemStatus()); return; }
+  if (url.pathname === '/api/settings') {
+    const force = url.searchParams.get('refresh') === '1';
+    const missingCatalog = !fs.existsSync(path.join(root, 'models-catalog.json'));
+    if (force || (autoRefreshCatalog && missingCatalog)) {
+      refreshPiCatalog({ stateRoot: root, executable, agentDir })
+        .then(() => send(200, buildSettingsPayload({ stateRoot: root, agentDir })))
+        .catch(error => {
+          console.error(error?.message || String(error));
+          send(200, { ...buildSettingsPayload({ stateRoot: root, agentDir }), catalogRefreshError: error.message });
+        });
+      return;
+    }
+    send(200, buildSettingsPayload({ stateRoot: root, agentDir }));
+    return;
+  }
   if (url.pathname === '/api/quota') {
     readCachedQuota(url.searchParams.get('refresh') === '1').then(
       result => send(200, result),
@@ -230,20 +353,13 @@ export async function startDashboard({
   port = defaultDashboardPort,
   token = randomBytes(32).toString('hex'),
   fetchQuota = () => getProviderQuota({ provider: 'all', signal: AbortSignal.timeout(4000) }),
+  agentDir,
+  backupDir,
+  executable = process.env.PI_EXECUTABLE || 'pi',
+  autoRefreshCatalog = false,
 }) {
   const data = new DashboardData(root);
   const cleanups = new Set();
-  const files = new Map([
-    ['/', ['index.html', 'text/html']],
-    ['/app.js', ['app.js', 'text/javascript']],
-    ['/dom.js', ['dom.js', 'text/javascript']],
-    ['/panels.js', ['panels.js', 'text/javascript']],
-    ['/dialogs.js', ['dialogs.js', 'text/javascript']],
-    ['/sidebar.js', ['sidebar.js', 'text/javascript']],
-    ['/conversation.js', ['conversation.js', 'text/javascript']],
-    ['/charts.js', ['charts.js', 'text/javascript']],
-    ['/style.css', ['style.css', 'text/css']],
-  ]);
   const readCachedQuota = createQuotaReader(fetchQuota);
   const validToken = value => {
     const actual = Buffer.from(value || '');
@@ -264,9 +380,9 @@ export async function startDashboard({
         return;
       }
       const cookieName = `pi_dashboard_${server.address().port}`;
-      if (files.has(url.pathname)) {
+      if (ASSET_FILES.has(url.pathname)) {
         if (url.pathname === '/') response.setHeader('set-cookie', `${cookieName}=${token}; Path=/; HttpOnly; SameSite=Strict`);
-        const [file, type] = files.get(url.pathname);
+        const [file, type] = ASSET_FILES.get(url.pathname);
         send(200, fs.readFileSync(path.join(assets, file)), type);
         return;
       }
@@ -275,8 +391,8 @@ export async function startDashboard({
         send(401, { error: '查看会话已过期，请刷新面板页面。' });
         return;
       }
-      if (request.method === 'POST') { handlePostRequest(request, url, site, data, send); return; }
-      handleGetRequest({ request, response, url, root, data, cleanups, readCachedQuota, send });
+      if (request.method === 'POST') { handlePostRequest({ request, url, site, data, root, agentDir, backupDir, executable, autoRefreshCatalog, send }); return; }
+      handleGetRequest({ request, response, url, root, data, cleanups, readCachedQuota, agentDir, executable, autoRefreshCatalog, send });
     } catch (error) {
       send(mapHttpErrorStatus(error), { error: error.message });
     }
@@ -307,7 +423,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === currentScript) {
   const root = process.env.PI_SUBAGENTS_STATE_DIR || fileURLToPath(new URL('../.agents/runtime/', import.meta.url));
   const port = parseDashboardPort();
   try {
-    const dashboard = await startDashboard({ root, port });
+    const dashboard = await startDashboard({ root, port, autoRefreshCatalog: true });
     fs.mkdirSync(root, { recursive: true, mode: 0o700 });
     atomicWriteJson(path.join(root, 'dashboard.json'), {
       pid: process.pid,
