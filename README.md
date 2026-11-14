@@ -1,164 +1,251 @@
-# CodeX 子代理拓展
+<div align="center">
+  <img src="docs/assets/logo.svg" width="88" height="88" alt="Pi Subagents Logo" />
+  <h1>Pi Subagents · Pi 调度台</h1>
+  <p><strong>面向 Google Antigravity、Claude Code 与 OpenAI Codex 的多模型子代理 MCP 调度平台与实时控制台</strong></p>
 
-把本机 Pi 封装为 Codex、Claude Code 和 Antigravity 可调用的 MCP。主会话负责拆分任务、选择模型和检查结果；Pi 会话执行开发包，使用自己已有的模型配置和凭据。
+  <p>
+    <a href="https://github.com/mumuxsy/pi-subagents/actions/workflows/ci.yml"><img src="https://github.com/mumuxsy/pi-subagents/actions/workflows/ci.yml/badge.svg" alt="CI Status" /></a>
+    <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="MIT License" /></a>
+    <img src="https://img.shields.io/badge/Node.js-%3E%3D22.19-339933?logo=nodedotjs&logoColor=white" alt="Node >= 22.19" />
+    <img src="https://img.shields.io/badge/MCP_SDK-1.26.0_(24_Tools)-e27448" alt="MCP SDK 1.26.0" />
+    <img src="https://img.shields.io/badge/Sandbox-macOS_Seatbelt-171614?logo=apple&logoColor=white" alt="macOS Seatbelt" />
+  </p>
 
-## 安装
+  <p>
+    <strong>简体中文</strong> · <a href="README.en.md">English</a> · <a href="#快速开始">快速开始</a> · <a href="#界面与功能导览">界面预览</a> · <a href="#24-个-mcp-工具全览">工具参考</a> · <a href="docs/communication.md">通信与沙箱协议</a>
+  </p>
+</div>
 
-需要 Node.js 22.19+、Pi 1.0.2+ 和支持 MCP 的客户端。先在 Pi 配好需要的模型与登录。
+<p align="center">
+  <img src="docs/assets/dashboard-overview.png" width="100%" alt="Pi 调度台三栏实时控制台总览" />
+</p>
+
+---
+
+**Pi Subagents** 将本机 [Pi Coding Agent](https://pi.dev) 封装为通用的模型上下文协议（MCP）子代理调度中心，并内置零外部前端框架依赖的本机实时控制台 **Pi 调度台**（`http://127.0.0.1:3141/`）。主代理负责拆解任务、按模型画像选型与验收代码；各个子代理在独立的 Git 工作树与操作系统级沙箱中并行执行开发、审查或排错任务，支持断线保活、阻塞提问与跨宿主自动唤醒。
+
+## 核心特性
+
+- **一处安装，三端原生协同**：解除了与单一客户端的绑定，同时适配 **Google Antigravity**（自动打包安装插件、规则、技能与 `PreInvocation` / `Stop` 生命周期钩子）、**Claude Code**（支持 `claude/channel` 通知与后台事件监听）以及 **OpenAI Codex**（支持 `codex queue` 会话队列唤醒）。
+- **独立控制进程，断线不丢现场**：MCP 桥接进程通过私密 Unix Socket 连接后台独立控制器（`src/controller.js`）。主聊天窗口关闭或重连不会终止运行中的 Pi 子进程与待答复问题，新会话可随时调用 `resume_agent` 无损接手。
+- **可靠双向通信与阻塞式提问**：子代理可通过 `agent_message` 汇报阶段进展或与同组兄弟代理协作，遇到需求歧义时调用 `ask_parent` 原地暂停等待；主会话调用 `reply_question` 明确答复后子代理立即继续执行，支持幂等 `requestId` / `messageId` 防重放。
+- **实时三栏控制台“Pi 调度台”**：按宿主父会话自动分组，中间区域支持逐字流式推理与折叠式工具执行回放，右侧检查器提供会话概况、输出速度（`tok/s`）、上下文窗口水位与只读 Git 工作树内联差异（Diff），并与 `organize_agents` 工具实时同步自定义标题、备注、置顶与归档状态。
+- **模型能力画像与脱敏设置中心**：提供 `get_model_profiles` 工具与面板左下角设置中心，集中维护各服务商启停、脱敏 API Key、本机 Codex OAuth 一键导入、上下文窗口（支持一键同步至 1M 上下文）、推荐思考强度与中文能力描述，让主代理在派活前有据可依。
+- **macOS Seatbelt 内核级三档沙箱**：通过 `/usr/bin/sandbox-exec` 约束工具与后代 shell 进程，默认在 Git 仓库分配独立 `worktree` 分支并在共享目录下强制校验不重叠的 `ownedPaths`；默认屏蔽 `~/.pi`、`~/.codex`、`~/.ssh` 等凭据目录，防止密钥外泄。
+- **多渠道套餐额度只读查询**：内置 `get_quota` 工具，在内存中只读使用本机 Pi 凭据查询 Codex、智谱 GLM / Z.ai、MiniMax Token Plan、DeepSeek 与 OpenCode Go 的周期剩余比例或账户余额，不改写凭据文件，也不暴露账号身份。
+
+## 系统架构
+
+```mermaid
+flowchart LR
+  subgraph Hosts["宿主主代理 (MCP Clients)"]
+    AGY["Google Antigravity\n(MCP + Hooks + Watcher)"]
+    CC["Claude Code\n(MCP + Channel / Watcher)"]
+    CDX["OpenAI Codex\n(MCP + Thread Queue)"]
+  end
+
+  subgraph Bridge["协议桥接与回调层"]
+    SRV["src/server.js\n(24 个 MCP 工具 / Tasks / 资源)"]
+    CB["src/callbacks.js\n(单调游标去重与三端唤醒)"]
+  end
+
+  subgraph Core["持久化守护层 (127.0.0.1 / Unix Socket)"]
+    CTRL["src/controller.js & manager.js\n(会话保活 / 阻塞问答 / 用量预检)"]
+    WEB["Pi 调度台 (Port 3141)\n(SSE 实时推送 / 脱敏设置中心)"]
+  end
+
+  subgraph Workers["受限执行层 (macOS Seatbelt)"]
+    PI1["Pi 子代理 A\n(独立 Git Worktree)"]
+    PI2["Pi 子代理 B\n(限定 ownedPaths)"]
+  end
+
+  AGY <--> SRV
+  CC <--> SRV
+  CDX <--> SRV
+  SRV <--> CTRL
+  CB <--> AGY
+  CB <--> CC
+  CB <--> CDX
+  CTRL --> CB
+  CTRL <--> PI1
+  CTRL <--> PI2
+  WEB -. "只读快照 / SSE / 同源配置" .-> CTRL
+```
+
+## 界面与功能导览
+
+### 1. 上下文窗口构成与增长曲线
+实时追踪每次模型请求的实际窗口占用（输入 + 缓存读写）、系统提示词各分区占比以及多轮请求增长趋势，直观判断何时需要拆分任务或压缩历史。
+
+<p align="center">
+  <img src="docs/assets/dashboard-context.png" width="100%" alt="上下文水位与增长曲线分析" />
+</p>
+
+### 2. 只读 Git 工作树内联差异审查
+在独立 `worktree` 或受限 `ownedPaths` 内自动对比基准提交，在面板右侧或通过 `get_agent_changes` 工具直接审阅子代理修改的每一行代码，确认无误后再由主代理合并。
+
+<p align="center">
+  <img src="docs/assets/dashboard-changes.png" width="100%" alt="只读 Git 工作树内联差异审查" />
+</p>
+
+### 3. 模型画像、1M 上下文同步与脱敏凭据设置中心
+无需手动编辑底层 JSON：在左下角设置弹窗即可切换服务商与模型开关、更新脱敏展示的 API Key 或 Base URL、同步本机 Codex OAuth 登录，并为每款模型编写适用场景与短板提示（修改前自动以 `0600` 权限备份原文件）。
+
+<p align="center">
+  <img src="docs/assets/dashboard-settings.png" width="100%" alt="模型画像、Key 与子代理设置中心" />
+</p>
+
+## 快速开始
+
+### 环境要求
+
+- **操作系统**：macOS（沙箱执行依赖系统内置的 `/usr/bin/sandbox-exec`）
+- **Node.js**：`>= 22.19.0`
+- **Pi CLI**：`>= 1.0.2`（需提前在终端完成 `pi` 安装及至少一个模型渠道登录）
+- **宿主工具**：Google Antigravity、Claude Code 或 OpenAI Codex 任一即可
+
+### 安装与接入
 
 ```bash
+git clone https://github.com/mumuxsy/pi-subagents.git
+cd pi-subagents
+
+# 1. 安装固定依赖并运行语法与全量沙箱测试（离线执行，不消耗模型额度）
 npm ci --ignore-scripts
 npm run check
 npm test
-npm run install:all      # 同时接入 Codex、Claude Code 和 Antigravity；也可单独 install:codex / install:claude / install:antigravity
+
+# 2. 一键接入本机已安装的 Antigravity、Claude Code 与 Codex
+npm run install:all
 ```
 
-安装器会配置名为 `pi-subagents` 的本地接入：Codex 写 `~/.codex/config.toml`，Claude Code 写 `~/.claude.json`，Antigravity 安装并启用本地插件 `~/.gemini/config/plugins/pi-subagents`（含 MCP、规则、技能与钩子）。原配置先保存到 `.agents/records/config-backups/`，权限为 600。安装目录需要保留；搬迁后在新目录重跑安装命令。
-
-升级只改客户端配置，不停止正在工作的子代理：已经打开的聊天继续使用旧桥接进程；新会话连接管理进程时，若旧控制进程脚本已过期且当前没有活跃子代理，会自动接替为新版控制进程。
-
-直接启动：`npm start`。卸载接入：`npm run uninstall:codex`、`npm run uninstall:claude` 或 `npm run uninstall:antigravity`；这不会删除源码、Pi 凭据、开发成果或保存的会话。恢复配置时优先移除本 MCP；完整配置备份只有在确认没有后续其他配置改动时才适合覆盖。
-
-## 给 Codex 的使用示例
-
-> 用 pi-subagents 创建两个国模子代理，分别负责订单查询包和商品查询包。先列出实际可用模型，给每个代理明确文件范围和验收样例。按消息记录处理提问，等两边真正结束，再检查代码和测试结果。复杂问题可以临时换模型，完成后恢复。
-
-服务在 MCP 初始化时提供跨工具使用说明，不需要覆盖用户全局 AGENTS.md。
-
-这是对 Codex 能力的补充，可用于批量调用已配置的国产模型。Codex 必须先确认用户在对话里明确授权使用外部模型子代理，再按授权的任务、模型、并发和费用范围执行；普通开发请求或账户还有额度不能代替这项授权。已有授权范围内继续推进，不反复询问；超出范围再问用户。查看模型、会话和面板属于只读操作。授权范围由 Codex 根据对话判断；服务实际执行文件、网络、模型和用量限制。服务不能独立证明输入的授权说明来自真人。更新限制时默认不再弹确认表单；需要时设置环境变量 `PI_SUBAGENTS_CONFIRM_POLICY=1` 重新开启。默认上限已放宽：请求 10 万次、token 1 万亿、运行 7 天、单次输出 12.8 万；运行时间上限最大 2147483647 毫秒（约 24 天，再大会超出 Node 定时器范围）。
-
-## 会话面板
-
-在项目目录运行 `npm run dashboard`，直接打开 `http://127.0.0.1:3141/`。页面自动通过 HttpOnly、SameSite=Strict cookie 建立私密查看会话，遇到服务重启返回 401 时会自动刷新查看 cookie 重试。启动器通过 `dashboard.lock` 防止并发启动多个面板进程。
-
-面板按三栏布局设计：左侧支持按宿主（Antigravity、Codex、Claude Code）与状态筛选、搜索框，并按父会话分组列出子代理；中间按轮次展示对话、`live.json` 实时流式输出与对话内搜索，每轮过程折叠在 "用时 X" 下；右侧分为五页（状态、速度、工具轨、上下文、改动），底部提供 "设置" 弹窗（按服务商切换启用状态、管理脱敏展示的 Key 与 Base URL、同步本机 Codex 登录与检查 OAuth 凭据、修改上下文窗口/最大输出/推荐思考强度/中文能力描述并同步 `models.json`，以及配置默认沙箱/联网/Skills/AGENTS 策略与查看 6 个内置 Pi 工具）和 "状态与额度" 弹窗（展示控制进程、活跃 `wait-events` 监听器、状态统计与 60 秒缓存的多服务额度）。深浅两套配色和 375px 窄屏抽屉都已适配。面板通过 `/api/events` SSE 实时推送并在断线时以 2 秒轮询兜底，只有摘要变化才重画局部组件；上报费用来自模型服务返回值，不是真实扣费。
-
-面板独立读取已有保存文件，不接手控制进程，不停止任务。当前已经运行的会话无需重启。后续默认 MCP 启动会自动启动或复用面板，`list_agents` 也返回面板链接。设置 `PI_DASHBOARD_AUTO=0` 可禁用自动启动；自定义运行目录使用 `PI_SUBAGENTS_STATE_DIR=/绝对路径 npm run dashboard` 单独打开，多个面板要通过 `PI_DASHBOARD_PORT` 指定不同端口。
-
-面板仅绑定 `127.0.0.1`，读取接口需要查看 cookie 或内部令牌，且拒绝其他 Host 和其他网站的请求。写操作包括面板视图整理（手动标记、移动分组、分组改名，保存在 `dashboard-marks.json`）以及设置中心对模型/默认策略（`model-settings.json`）与 Pi 服务商配置（改写 `auth.json` 与 `models.json` 前自动以 600 权限备份到 `.agents/runtime/config-backups/`）的同源请求，均需要同源和自定义请求头；界面和接口始终只展示脱敏凭据状态。改动页在代理工作目录里只读执行 `git status / diff / log`。提问答复、指导、中断和模型切换仍由所属聊天通过 MCP 执行。控制进程消失的运行中记录显示为控制进程已离线，不伪装为完成。
-
-面板地址与进程身份保存在 `.agents/runtime/dashboard.json`，私密启动日志在 `dashboard.log`。面板关闭不影响子代理；重启电脑后下次 MCP 启动会重新打开服务。面板数据、截图和查看令牌不要发布到外部。
-
-## 开发模式沙箱
-
-默认沙箱很严：子代理只能读工作目录和系统目录，只能写 ownedPaths，因此跑不了 uv、项目虚拟环境里的 Python，也无法在链接工作树里提交。需要子代理自己跑测试和提交时，在本项目写入本机配置 `.agents/sandbox.json`：
-
-```json
-{"mode":"dev"}
-```
-
-开发模式下，子代理可以读取除凭据和管理进程状态以外的文件；可以写整个工作树、它的 Git 仓库、`~/.cache`、`~/.local/share/uv`、`~/Library/Caches` 和临时目录；可以连接本机地址（例如本地数据库），外网按 `allowNetwork` 控制（默认开启）。`~/.pi`、`~/.codex`、`~/.ssh` 和管理进程状态在两种模式下都不能读写，凭据不会进入子进程环境。配置每次执行工具时读取，改完不需要重启管理进程；删掉文件就恢复默认的严格模式。
-
-### 完全放开模式（bypass）
-
-最宽的一档：子代理可以读写任意路径，包括 `~/.pi`、`~/.codex`、`~/.ssh`，也继承 `HOME` 和常用 PATH；外网按 `allowNetwork` 控制（默认开启）。只有管理进程状态目录仍然不可读写，因为里面是其他代理的令牌。有两种开法：
-
-- 单个代理：`spawn_agent` 或 `update_agent_policy` 的 `policy` 里传 `sandboxMode: "bypass"`（也可传 `"dev"` 或 `"strict"`）。
-- 本机默认：`.agents/sandbox.json` 写 `{"mode":"bypass"}`。
-
-策略里的 `sandboxMode` 优先于本机配置。放开凭据意味着模型可以读到 SSH 密钥和 Pi 的 key，只在你信任该任务时使用。
-
-## 用量上限与提醒
-
-默认不再限制用量：请求 10 万次、总 token 1e12、运行 7 天、单次输出 12.8 万、外网开启。任何一项都可以在 `policy` 里收紧。设置了 `maxTotalTokens` 时，用量到 80% 会向代理发一条提醒，要求它先用 `agent_message` 汇报进展；耗尽后新请求被拒绝，代理状态变为 failed。策略改动后需要重启管理进程，新的默认值才会对新建代理生效。
-
-管理进程被替换后，已经打开的桥接进程会在下一次调用时重新读取 `controller.json` 并重新挂接，不需要重启客户端。
-
-## 工具
-
-| 工具 | 用途 |
-| --- | --- |
-| `get_quota` | 直接用 Pi 凭据查询各家套餐额度或余额；默认查询已配置的支持服务，不依赖 CodexBar |
-| `list_models` | 从本机 Pi 获取已启用的模型（含上下文窗口与能力描述）；支持 `includeDisabled` 查看禁用项；不返回凭据 |
-| `get_model_profiles` | 一次读取各可用模型的上下文窗口、推荐思考强度、适用场景与差异描述、服务商启用状态（无明文密钥）、Pi 子代理内置工具清单与默认策略 |
-| `spawn_agent` | 创建会话，指定模型、思考强度、目录、文件范围、Antigravity 会话编号和任务；立即返回身份 |
-| `list_agents` | 查看当前子代理，支持按 `sessionId` 过滤；可额外列出以前保存的会话 |
-| `read_agent` | 状态、消息、实际用量、最近结果；可显式读取有限长度的会话内容 |
-| `send_message` | 追加任务、运行中指导，或等当前任务结束再执行 |
-| `reply_question` | 明确回答一个正在等待的子代理问题 |
-| `wait_agent` | 等待指定代理的新事件、完成或提问，最长 45 秒；支持取消 |
-| `set_agent_model` | 空闲时换模型；`next_run` 在下一次工作结束后恢复原模型与思考强度 |
-| `interrupt_agent` | 清空旧指令队列并停止当前运行；已修改文件保留 |
-| `close_agent` | 停止并关闭进程，保留会话和工作目录 |
-| `resume_agent` | 显式接手保存会话或断线后仍在运行的会话；不重复之前的任务 |
-| `bind_session` | 把指定或当前宿主父会话的多个子代理绑定到指定会话编号，统一过滤和回调追踪 |
-| `get_subagent_health` | 检查本机 Pi、控制进程、模型数量和当前活跃子代理健康状态 |
-| `read_messages` / `ack_messages` | 读取持久消息与送达状态，明确确认已读 |
-| `update_agent_policy` | 经用户明确授权修改模型、网络和用量限制 |
-| `get_client_capabilities` | 查看客户端实际声明的协议能力和限制 |
-| `run_agent_task` | 支持 Tasks 的客户端使用标准异步任务协议 |
-| `resume_task` | 前一个主会话断开后，显式接手同一个任务 |
-| `set_agent_callback` | 设置或关闭回调：子代理结束、提问、失败、触发用量限制时唤醒主会话 |
-| `get_agent_changes` | 只读查看子代理实际改动：Git 状态、提交和有限长度的 diff |
-
-`send_message` 的 `steer` 在当前模型回答和工具执行结束后的合适位置接收；`follow_up` 等当前工作完成再接收。`ask_parent` 正在等待时必须调用 `reply_question`；普通消息不会替代问题答复。
-
-**不要忘记等待**：`spawn_agent`、`send_message` 的返回里有 `mustWait` 提醒，`wait_agent` 的返回里有 `pending`（仍在工作）、`asking`（等待答复）和 `reminder`。主会话结束本轮回答后，MCP 无法再唤醒它，所以启动子代理后必须一直等到 completed、failed、interrupted 或 closed，确实要提前结束时要明确告诉用户子代理还在后台。Claude Code 和 Antigravity 还应把 `mustWait` 里给出的后台 `wait-events` 命令跑起来，事件到达会唤醒主会话。
-
-每次 `wait_agent` 返回后，把各代理的 `nextSequence` 放入下一次的 `after[agentId]`，避免重复读取。工具执行进度也会使等待返回；继续检查 `status`，不要把一次工具返回当成开发包完成。
-
-子代理拥有 `agent_message(recipient, message)` 和 `ask_parent(question)`。`recipient` 可为 `parent`，或父代理提供的兄弟代理身份。兄弟消息成为对方的新指令；父代理消息进入可读取的事件记录。
-
-## 回调唤醒
-
-`spawn_agent` 默认开启回调，事件为 `settled`、`question`、`process_failed`、`budget_limit`、`control_failed`；可加 `message`（子代理给主会话的进度报告）。回调只提醒主会话回来协调，不代表验收通过。已经发生过的历史事件不会重新回调，同一事件只发一次。
-
-| 主会话 | 回调方式 |
-| --- | --- |
-| Antigravity | 创建或恢复时传 `antigravitySessionId`（或用 `bind_session` 绑定会话）。通过插件内置的 `PreInvocation` 和 `Stop` 钩子自动注入待处理事件，或按 `mustWait.antigravityBackgroundCommand` 在后台运行 `node scripts/wait-events.js --session <id>` 监听唤醒（并在 `watchers/*.json` 记录活跃心跳）；可选开启 `antigravityCliResume` 调用本机 `agy`。所有路径共享 `antigravityDeliveredSeq` 游标去重。 |
-| Codex | 先在 shell 运行 `echo $CODEX_THREAD_ID`，把结果作为 `callback.codexThreadId` 传给 `spawn_agent`（或之后用 `set_agent_callback`）。事件发生时桥接进程执行 `codex queue --thread <id> --message ...`，消息进入该聊天的队列。 |
-| Claude Code（channel） | 服务声明 `claude/channel` 能力并发送 `notifications/claude/channel`。只有以 channel 方式启用本服务的会话才会被唤醒，例如 `claude --dangerously-load-development-channels server:pi-subagents`。 |
-| Claude Code（通用） | 把 `npm run wait-events -- --agent <id>` 作为后台命令运行：事件到达时打印摘要并退出，Claude Code 随即被唤醒；配合 Monitor 可用 `--follow` 持续输出。只读保存文件，不需要 channel。 |
-
-回调由所属主会话的桥接进程发出：主会话关闭后不再回调，用 `resume_agent` 接手后重新 `set_agent_callback`。最近一次投递结果记录在 `.agents/runtime/callbacks/<agentId>.json`。
-
-## 并行与会话
-
-- Git 项目默认创建独立 worktree 和 `pi-agent/<身份>` 分支。源目录有未提交改动时，必须明确选择一个已提交的 `baseRef`，或者明确使用 `shared`。未提交内容不会自动复制。
-- 非 Git 目录使用共享目录。每个代理必须声明 `ownedPaths`，活跃代理的文件范围不能重叠。新会话的工具写入受操作系统限制，只允许声明范围；符号链接也要通过检查。
-- 不自动合并代码、删除工作目录、发布或对外发送。Codex 检查后自行按用户授权处理 Git 合并。
-- 默认最多同时打开 50 个 Pi 会话。可用 `PI_SUBAGENTS_MAX_AGENTS` 设置 1–50；`wait_agent` 一次最多等待 50 个；打开但空闲的会话也计入，避免无限积累进程。
-- 会话、状态、事件和工作目录默认保存在本项目 `.agents/runtime/`，不进入 Git。可用 `PI_SUBAGENTS_STATE_DIR` 指定其他本机目录。
-- MCP 连接关闭时仅断开主会话，独立管理进程继续运行 Pi 并保留等待的问题。新连接用 `list_agents(includeSaved=true)` 和 `resume_agent` 恢复；另一个仍连接的主会话持有的代理不能同时接手。重启电脑或管理进程实际退出后，显式恢复保存的 Pi 会话，旧任务不重发。
-- 模型切换只改变该会话，不改变 Pi 全局默认模型。历史通过 Pi 转成目标模型可接收的内容；不保证转移各服务的私有思考状态。
-
-## 能力边界
-
-外部 Pi 代理以 MCP 工具显示，不会变成 Codex 原生子代理界面。父代理可以接收标准日志、资源订阅和进度通知，或使用等待和读取工具；结束本轮回答后的唤醒依赖上面的宿主专用回调，不是 MCP 通用能力。也不会自动继承 Codex 全部隐藏上下文，必要资料需要通过 `context` 或任务说明交付。
-
-模型目录说明本机已配置，不代表每个模型都实际调用成功。状态 `completed` 说明 Pi 不会继续自动运行，不代表业务验收通过。`usage.reportedCost` 为 Pi 根据模型目录价格报告的金额，部分自定义模型为零；不是服务商的实际扣费记录，不能用它推断真实费用。
-
-新会话明确加载通信和权限扩展，限制文件工具与 shell 子进程。当前使用 macOS Seatbelt；其他平台会拒绝启动受限制代理。模型调用由可信 Pi 主进程使用凭据，工具进程不继承凭据环境，拒绝读取 .pi、.codex、.ssh 和管理进程状态。shell 默认可以联网，需要隔离网络时把 allowNetwork 设为 false。它不替代对 Pi 本身及安装扩展的信任，也不隔离 CPU、内存或磁盘容量。旧版本已经启动的代理保留旧行为，不能倒推成已获得新限制。
-
-## 验证与证据
+也可以按需单独安装或卸载某一端（安装前会自动把原客户端配置以 `0600` 权限备份至 `.agents/records/config-backups/`，卸载不会删除源码、Pi 凭据或历史会话）：
 
 ```bash
-npm test                 # 不调用模型的业务行为检查
-npm run verify:communication # 真实断线恢复、问题答复、受限工具与请求上限
-npm run verify:live      # 真实调用 GLM、DeepSeek、MiniMax、OpenCode Go
-node scripts/verify-codex.js  # 已安装后，由真实 Codex 调用 MCP 和 GLM
+npm run install:antigravity   # 生成并严格校验 ~/.gemini/config/plugins/pi-subagents 插件包
+npm run install:claude        # 写入 ~/.claude.json 用户级 MCP 配置
+npm run install:codex         # 写入 ~/.codex/config.toml 全局 MCP 配置
+
+npm run uninstall:antigravity # 移除 Antigravity 插件接入
+npm run uninstall:claude      # 移除 Claude Code 接入
+npm run uninstall:codex       # 移除 Codex 接入
 ```
 
-真实验证在系统临时目录执行演示开发包，不接触生产数据。原始会话和结果留在 `.agents/records/live-*/`、`.agents/records/codex-*/`。这些资料包含提示和模型回答，按私密本机资料处理；确认结果且不再需要复现后可以删除。当前验证结果见 [docs/verification.md](docs/verification.md)。
+> **提示**：安装器在客户端配置中写入了当前仓库的绝对路径，移动仓库目录或升级 Node 版本后请重新运行一次安装命令。已打开的宿主聊天窗口重开新会话即可加载新版工具。
 
-可靠通信、默认限制和协议支持见 [docs/communication.md](docs/communication.md)。
+### 打开 Pi 调度台
 
-代码入口与维护要求见 [AGENTS.md](AGENTS.md)。
+MCP 服务首次启动时会自动在后台拉起或复用面板；你也可以随时手动启动：
 
-## 额度查询
+```bash
+npm run dashboard
+# 浏览器打开 http://127.0.0.1:3141/
+```
 
-调用 `get_quota()` 默认查询 Pi 已配置且支持的服务；用 `provider` 查询一家：`openai-codex`、`zhipu`、`zai`、`minimax-tokenplan`、`deepseek` 或 `opencode-go`。读取 `PI_CODING_AGENT_DIR/auth.json`；未设置时使用 `~/.pi/agent/auth.json`。不依赖 CodexBar、Codex CLI、浏览器 cookie 或额外库，不复制或改写凭据。
+## 三大宿主接入与回调唤醒
 
-| 服务 | 查询结果 |
-| --- | --- |
-| Codex | 套餐、实际返回的 5 小时/每周窗口、credits 余额、重置卡 |
-| GLM 国内 / Z.ai | Coding 套餐窗口、剩余百分比、重置时间；搜索/阅读工具次数单独返回 |
-| MiniMax Token Plan | 按 general/video 等服务列出当前周期和每周百分比、剩余次数、状态、重置时间 |
-| DeepSeek | 各币种余额、赠送余额与充值余额；不伪造套餐百分比 |
-| OpenCode Go | rolling、每周、每月用量与重置时间 |
+MCP 协议本身不保证在主代理结束一轮回复后重新唤醒模型，因此 Pi Subagents 针对三大宿主分别提供了防漏等提醒（`mustWait`）与原生唤醒通道：
 
-`all` 返回各家独立结果，一家失败不隐藏其他数据；未支持的 Pi 服务列入 `unsupportedProviders`。服务可能共用同一账号，不能相加。缺失字段为 `null`，不能当成 100% 或 0%。credits 与人民币/美元余额分别保留单位。工具不估算本任务未来消耗。MiniMax 的 `usage_count` 在 remains 接口里表示剩余次数；次数和百分比矛盾时给出警告，状态也保留。
+| 宿主客户端 | 会话绑定方式 | 自动唤醒与防漏等机制 |
+| --- | --- | --- |
+| **Google Antigravity** | `spawn_agent` 传入 `antigravitySessionId`（当前会话 ID），或调用 `bind_session` | 插件内置 `PreInvocation` 与 `Stop` 钩子自动注入未读事件并拦截未挂监听器的过早收尾；同时可运行返回结果中的 `mustWait.antigravityBackgroundCommand`（`node scripts/wait-events.js --session <id>`）后台监听即时唤醒，全部通道共用 `antigravityDeliveredSeq` 单调游标去重。 |
+| **Claude Code** | 自动识别 `CLAUDE_CODE_SESSION_ID` 并在面板分组 | 以开发通道启动（`claude --dangerously-load-development-channels server:pi-subagents`）时直接推送 `notifications/claude/channel`；普通模式下将 `npm run wait-events -- --agent <id>` 放到后台运行即可在事件到达时唤醒主会话。 |
+| **OpenAI Codex** | 在 shell 读取 `echo $CODEX_THREAD_ID`，传入 `callback.codexThreadId` | 子代理完成、提问、失败或触及策略上限时，桥接进程自动执行 `codex queue --thread <id> --message ...` 将通知排入对应会话队列。 |
 
-额度可用不代表获得花费授权。Codex 仍须遵守用户明确允许的任务、模型和预算范围；额外付费或使用重置卡须另有授权。工具只查询，不购买、不兑换、不调用模型。Codex 凭据过期时通过 Pi 续期；查询工具不执行命令型 key、不改写认证文件。重置卡查询失败会保留有效套餐额度并返回警告。
+### 对话调度示例
 
-查询方式参考 [CodexBar 官方实现说明](https://github.com/steipete/CodexBar/blob/main/docs/codex.md)和各服务接口；实现独立编写，没有引入或复制它的 Swift 工程。Codex、GLM 和部分套餐接口可能变化，接口失败或格式未知会明确报错。DeepSeek 余额接口见 [官方文档](https://api-docs.deepseek.com/api/get-user-balance/)。
+在任意已接入的宿主聊天中输入：
+
+> 请先调用 `get_model_profiles` 查看当前启用的模型画像，再用 `pi-subagents` 启动两个独立子代理：一个用高推理模型审查 `src/order/` 的并发锁边界，另一个为 `src/payment/` 补充幂等回归测试。给两边声明不冲突的 `ownedPaths`，遇到子代理提问及时答复，等两边全部结束后用 `get_agent_changes` 检查实际改动并跑通测试。
+
+## 24 个 MCP 工具全览
+
+### 会话创建与生命周期（10 个）
+
+| 工具名 | 只读 | 说明 |
+| --- | :---: | --- |
+| `spawn_agent` | 否 | 创建独立 Pi 子代理，指定服务商/模型、思考强度、工作区模式（`auto` / `worktree` / `shared`）、`ownedPaths`、宿主会话编号与初始任务 |
+| `wait_agent` | 是 | 阻塞等待一个或多个子代理产生新事件、提问或结束（单次最长 45 秒），返回递增 `nextSequence` 与仍在运行的 `pending` 列表 |
+| `read_agent` | 是 | 按事件序号分页读取子代理状态、实际 Token 用量、最近回复及有限长度的对话记录 |
+| `send_message` | 否 | 向子代理追加指令：`steer` 在当前工具结束后立即插入，`follow_up` 等当前回合整体完成后执行 |
+| `set_agent_model` | 否 | 为空闲子代理切换模型与思考强度；传入 `scope: "next_run"` 可在下一次运行结束后自动恢复原模型 |
+| `interrupt_agent` | 否 | 清空待执行指令队列并中止当前运行（已落盘的文件修改保留，不会自动回滚） |
+| `close_agent` | 否 | 停止并关闭指定 Pi 子进程，保留会话记录与 Git 工作树供后续审查或恢复 |
+| `resume_agent` | 否 | 显式接手已保存的历史会话或桥接断开后仍在后台运行的会话，不会重复发送旧任务 |
+| `list_agents` | 是 | 列出当前活跃或历史保存的子代理，支持按宿主 `sessionId` 和 `archiveFilter`（活跃/已归档）过滤，并返回面板地址 |
+| `organize_agents` | 否 | 修改会话显示标题、摘要备注、置顶、分组、手动状态标记或归档已完成会话，与 3141 面板实时共享 |
+
+### 模型画像、健康与额度（4 个）
+
+| 工具名 | 只读 | 说明 |
+| --- | :---: | --- |
+| `get_model_profiles` | 是 | 一次获取已启用模型的上下文窗口、推荐思考强度、中文能力与差异描述、脱敏服务商就绪状态、6 个内置子代理工具清单与默认沙箱策略 |
+| `list_models` | 是 | 列出本机 Pi 可用模型目录（默认过滤已在设置中心停用的模型，传 `includeDisabled: true` 可查看全部） |
+| `get_quota` | 是 | 使用本机 Pi 凭据只读查询 Codex、智谱 GLM / Z.ai、MiniMax Token Plan、DeepSeek 与 OpenCode Go 套餐窗口或余额 |
+| `get_subagent_health` | 是 | 检查 Pi 可执行文件、后台控制进程、macOS `sandbox-exec`、可用模型数、面板地址及插件钩子健康状态 |
+
+### 可靠通信、回调与审查（6 个）
+
+| 工具名 | 只读 | 说明 |
+| --- | :---: | --- |
+| `reply_question` | 否 | 明确回答子代理通过 `ask_parent` 提出的阻塞问题并放行等待中的工具 |
+| `read_messages` | 是 | 按游标分页读取持久化消息回执（区分 `accepted`、`consumed` 与 `acknowledged` 状态） |
+| `ack_messages` | 否 | 显式确认主会话已读取指定消息列表 |
+| `bind_session` | 否 | 将当前连接及指定子代理绑定到 Antigravity 或其他宿主会话编号，统一面板分组与回调追踪 |
+| `set_agent_callback` | 否 | 动态开启、关闭或调整子代理唤醒回调的目标会话与事件类型（默认监听 `settled`、`question`、`process_failed`、`budget_limit`、`control_failed`） |
+| `get_agent_changes` | 是 | 只读检查子代理在工作树或 `ownedPaths` 内的真实 Git 状态、提交记录与有限长度的 Diff |
+
+### 策略治理与标准 MCP Tasks（4 个）
+
+| 工具名 | 只读 | 说明 |
+| --- | :---: | --- |
+| `update_agent_policy` | 否 | 在获得用户明确授权后，更新空闲子代理的允许模型、联网开关、沙箱档位或用量上限 |
+| `get_client_capabilities` | 是 | 查看当前宿主客户端协商的 MCP 协议能力与回调支持情况 |
+| `run_agent_task` | 否 | 供支持 MCP 2025-11-25 Tasks 协议的客户端以标准异步任务方式启动子代理 |
+| `resume_task` | 否 | 在前一个主会话断开后显式接手持久化的标准 MCP 任务 |
+
+## 安全沙箱、用量统计与评测模式
+
+### 三档沙箱模式对比
+
+可通过面板左下角“设置 → 子代理工具与默认策略”、单代理 `policy.sandboxMode` 参数，或项目内 `.agents/sandbox.json`（写入 `{"mode":"dev"}`）切换（单代理 `policy.sandboxMode` 优先级最高）：
+
+| 沙箱档位 | 允许读取范围 | 允许写入范围 | 凭据与控制状态保护 | 典型适用场景 |
+| --- | --- | --- | --- | --- |
+| **`strict`**（默认） | 工作目录与系统运行目录 | 仅声明的 `ownedPaths` 与私有临时目录 | 禁止读写 `~/.pi`、`~/.codex`、`~/.ssh` 与控制进程目录 | 只读代码审查、限定单模块的局部修改 |
+| **`dev`** | 除敏感凭据与控制目录外的本机开发工具链 | 整个子代理工作树、Git 目录、`~/.cache`、`~/.local/share/uv`、`~/Library/Caches` | 禁止读写 `~/.pi`、`~/.codex`、`~/.ssh` 与控制进程目录 | 需要子代理自行运行 `uv` / Python / Node 测试与本地提交 |
+| **`bypass`** | 本机全部常规与凭据路径 | 本机任意路径（控制进程目录除外） | **仅保护控制进程目录**（模型可读到 SSH 与 Pi 密钥） | 仅用于你完全信任且确需跨目录读写配置的本机任务 |
+
+### 用量统计与洁净评测模式
+
+- **非缓存 Token 统计**：内置默认上限已放宽为单会话 `100,000` 次请求、`1e12` 非缓存读取 Token、最长运行 `7` 天、单次输出 `128,000` Token。`policy.maxTotalTokens` 只累计实际新增消耗（`input + output + cacheWrite`），不会把多轮工具调用重复命中的缓存前缀（`cacheRead`）反复叠加；当配置了自定义上限并达到 80% 时，系统会自动提醒子代理先通过 `agent_message` 汇报进展。
+- **洁净评测模式（Benchmark Clean Profile）**：进行跨模型对比实验时，可在 `spawn_agent.context` 中单独一行传入 `BENCHMARK_PROMPT_PROFILE=clean`。该选项会在子代理启动前清空继承的全局/项目 `AGENTS.md` 与技能列表，同时完整保留基础编码提示词、6 个工具、父会话指令与全部沙箱策略，避免个性化规则干扰基准评测。
+
+## 环境变量参考
+
+| 环境变量 | 默认值 | 作用 |
+| --- | --- | --- |
+| `PI_SUBAGENTS_STATE_DIR` | `<仓库根目录>/.agents/runtime` | 指定会话、控制进程 Socket、工作树与配置的本机存储目录 |
+| `PI_DASHBOARD_PORT` | `3141` | 指定 Pi 调度台监听的本地端口（仅绑定 `127.0.0.1`） |
+| `PI_DASHBOARD_AUTO` | `1` | 设为 `0` 时禁止 MCP 服务启动时自动拉起 Web 调度台 |
+| `PI_SUBAGENTS_MAX_AGENTS` | `50` | 单个控制进程允许同时打开的最大 Pi 会话数（范围 `1`–`50`） |
+| `PI_SUBAGENTS_CONFIRM_POLICY` | `0` | 设为 `1` 时，调用 `update_agent_policy` 会在支持 Elicitation 的客户端弹出确认表单 |
+| `PI_EXECUTABLE` | 自动解析 `PATH` 中的 `pi` | 显式指定本机 Pi CLI 的绝对可执行路径 |
+| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | 指定读取 Pi `auth.json` 与 `models.json` 的配置目录 |
+
+## 能力边界说明
+
+- **费用与授权边界**：子代理的 `usage.reportedCost` 根据模型目录静态单价估算，自定义渠道可能显示为 `0`，不能替代服务商真实账单；`get_quota` 返回套餐有剩余额度也不等于用户已授权消费，主代理在扩大付费模型调用范围前仍须征得用户同意。
+- **平台与验收边界**：进程级工具隔离依赖 macOS Seatbelt，非 macOS 平台运行受限子代理会安全报错退出；子代理状态变为 `completed` 仅代表该回合模型停止输出，代码正确性仍需主代理结合 `get_agent_changes` 与测试命令独立验收。
+
+## 深入文档与治理
+
+- [可靠通信、权限沙箱与协议规范](docs/communication.md)
+- [验证矩阵与 88 项回归记录](docs/verification.md)
+- [代码结构与维护约定](AGENTS.md)
+- [参与贡献指南](CONTRIBUTING.md) · [安全漏洞私密上报](SECURITY.md) · [版本更新记录](CHANGELOG.md)
+
+## 致谢与开源协议
+
+- 套餐额度只读查询接口格式参考了 [CodexBar](https://github.com/steipete/CodexBar) 的公开协议说明与各模型服务商官方文档，由本项目使用 Node.js 独立实现。
+- 本项目基于 [MIT License](LICENSE) 开源发布。

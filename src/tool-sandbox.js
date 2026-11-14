@@ -18,8 +18,7 @@ export function sandboxMode(policy = {}) {
   if (policy.sandboxMode) return modes.has(policy.sandboxMode) ? policy.sandboxMode : 'strict';
   try { const mode = JSON.parse(fs.readFileSync(configFile, 'utf8')).mode; return modes.has(mode) ? mode : 'strict'; } catch { return 'strict'; }
 }
-const privateHome = ['.pi', '.codex', '.ssh'].map(value => path.join(os.homedir(), value));
-/** The worktree's shared Git directory, so commits work from linked worktrees. */
+const privateHome = () => ['.pi', '.codex', '.ssh'].map(value => canonicalPath(path.join(os.homedir(), value)));
 function gitCommonDir(cwd) {
   try {
     const marker = path.join(cwd, '.git');
@@ -38,11 +37,10 @@ export function assertToolPath(value, policy, write = false) {
   const state = canonicalPath(policy.stateRoot);
   const workspace = fs.realpathSync(policy.cwd);
   if (inside(target, state) && !(inside(workspace, state) && inside(target, workspace))) throw new Error('Tool cannot read controller state');
-  if (mode !== 'bypass') for (const directory of privateHome) if (inside(target, directory)) throw new Error('Tool cannot read private credentials');
+  if (mode !== 'bypass') for (const directory of privateHome()) if (inside(target, directory)) throw new Error('Tool cannot read private credentials');
   return target;
 }
 const filter = value => `(subpath ${JSON.stringify(canonicalPath(value))})`;
-/** macOS Seatbelt profile applies to every shell and file-operation subprocess, including descendants. */
 export function sandboxProfile(policy) {
   if (process.platform !== 'darwin' || !fs.existsSync('/usr/bin/sandbox-exec')) throw new Error('Strict tool sandbox requires macOS sandbox-exec; unsupported platforms fail closed.');
   const mode = sandboxMode(policy);
@@ -52,9 +50,7 @@ export function sandboxProfile(policy) {
   const owned = policy.ownedPaths.map(value => canonicalPath(path.resolve(policy.cwd, value)));
   if (owned.some(value => !inside(value, workspace))) throw new Error('Owned path resolves outside the workspace');
   const write = [...owned, policy.tempDir, '/dev/null', '/dev/tty'];
-  const privateDirectories = ['.pi', '.codex', '.ssh'].map(value => path.join(os.homedir(), value)).filter(value => fs.existsSync(value));
-  // Ancestor metadata is needed by realpath and SQLite; outside file contents remain unreadable.
-  // Controller-state and credential rules below keep their stricter metadata restrictions.
+  const privateDirectories = privateHome();
   return `(version 1) (allow default)
 (deny file-read-data (require-not (require-any (literal "/") ${read.map(filter).join(' ')})))
 (deny file-write* (require-not (require-any ${write.map(filter).join(' ')})))
@@ -64,12 +60,11 @@ ${privateDirectories.map(value => `(deny file-read* ${filter(value)}) (deny file
 ${policy.allowNetwork ? '' : '(deny network*)'}
 (deny appleevent-send) (deny mach-lookup) (deny process-info*) (deny signal)`;
 }
-/** Development mode: read anything except credentials and controller state contents (path metadata stays visible so worktrees inside the state root can resolve); write the worktree, Git and build caches; local network only. */
 function developmentProfile(policy, open = false) {
   const home = os.homedir();
   const write = [policy.cwd, policy.tempDir, gitCommonDir(policy.cwd), path.join(home, '.cache'), path.join(home, '.local/share/uv'), path.join(home, 'Library/Caches'), '/private/var/folders', '/private/tmp', '/dev']
     .filter(value => value && fs.existsSync(value));
-  const privateDirectories = open ? [] : privateHome.filter(value => fs.existsSync(value));
+  const privateDirectories = open ? [] : privateHome();
   const own = inside(canonicalPath(policy.cwd), canonicalPath(policy.stateRoot)) ? filter(policy.cwd) : '';
   return `(version 1) (allow default)
 ${open ? '' : `(deny file-write* (require-not (require-any ${write.map(filter).join(' ')})))`}

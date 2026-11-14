@@ -1,10 +1,44 @@
 {
-  "name": "codex-pi-subagents",
-  "version": "1.6.0",
-  "private": true,
+  "name": "pi-subagents",
+  "version": "1.7.0",
+  "license": "MIT",
   "type": "module",
-  "description": "供 Codex 调用的 Pi 多模型子代理 MCP",
-  "engines": { "node": ">=22.19" },
+  "description": "面向 Antigravity、Claude Code 与 Codex 的 Pi 多模型子代理调度平台（MCP 服务与实时 Web 调度台）",
+  "author": "mumuxsy",
+  "homepage": "https://github.com/mumuxsy/pi-subagents#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mumuxsy/pi-subagents.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mumuxsy/pi-subagents/issues"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "pi-coding-agent",
+    "subagents",
+    "multi-agent",
+    "antigravity",
+    "claude-code",
+    "codex",
+    "agent-orchestration",
+    "sandbox"
+  ],
+  "engines": {
+    "node": ">=22.19"
+  },
+  "files": [
+    "src/",
+    "dashboard/",
+    "extensions/",
+    "scripts/",
+    "docs/",
+    "README.md",
+    "README.en.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
   "scripts": {
     "start": "node src/server.js",
     "dashboard": "node scripts/dashboard.js",
@@ -21,5 +55,9 @@
     "verify:live": "node scripts/verify-live.js",
     "wait-events": "node scripts/wait-events.js"
   },
-  "dependencies": { "@modelcontextprotocol/sdk": "1.26.0", "undici": "7.30.0", "zod": "3.25.76" }
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.26.0",
+    "undici": "7.30.0",
+    "zod": "3.25.76"
+  }
 }

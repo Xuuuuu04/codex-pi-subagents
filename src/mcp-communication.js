@@ -20,7 +20,7 @@ export function installCommunication(server, manager, register) {
     if (['question', 'settled', 'process_failed', 'budget_limit'].includes(event.type)) server.server.sendLoggingMessage({ level: event.type === 'process_failed' ? 'error' : 'info', logger: 'pi-subagents', data: { agentId: event.agentId, sequence: event.sequence, type: event.type, questionId: event.questionId, status: event.status } }).catch(error => process.stderr.write(`Pi log notification failed: ${error.message}\n`));
   });
   manager.on('controller_error', error => { process.stderr.write(`Pi controller: ${error.message}\n`); });
-  register('get_client_capabilities', 'Inspect negotiated MCP client capabilities and supported server features. Notifications do not imply that the host automatically wakes the Codex model after a turn has ended. Use wait/read fallback if the host does not consume asynchronous events.', {}, () => ({
+  register('get_client_capabilities', 'Inspect negotiated MCP client capabilities and supported server features. Notifications do not imply that the host automatically wakes the parent model after a turn has ended. Use wait/read fallback if the host does not consume asynchronous events.', {}, () => ({
     client: server.server.getClientVersion(), negotiated: server.server.getClientCapabilities(),
     server: { durableMessages: true, independentController: Boolean(manager.call), resourceSubscriptions: true, logNotifications: true, progressNotifications: true, tasks: 'experimental MCP 2025-11-25' },
     callbacks: {

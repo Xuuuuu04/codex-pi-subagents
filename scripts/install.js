@@ -80,7 +80,7 @@ const pluginRules = `# Pi Subagents Rules for Antigravity
 When delegating tasks to external models through \`pi-subagents\`, follow these rules:
 
 1. Handle the majority of coding, research, and execution tasks directly yourself unless delegation clearly adds value (major decisions, independent review, or user-requested subagent runs).
-2. Before spawning, check enabled models, context windows, capability descriptions, and Pi subagent tools via \`get_model_profiles\` or \`list_models\` (and \`get_subagent_health\` / \`get_quota\` if needed): prefer \`openai-codex/gpt-6-astra\` as a strict conservative brake on research and major architectural decisions (use thoughtfully due to tighter quota), and \`openai-codex/gpt-6.1-sol\` for lower-cost code review, debugging, or math/logic verification while explicitly instructing it to avoid defensive fallback code and redundant docs.
+2. Before spawning, check enabled models, context windows, capability descriptions, and Pi subagent tools via \`get_model_profiles\` or \`list_models\` (and \`get_subagent_health\` / \`get_quota\` if needed), and match each configured model's capability profile (for example, when \`openai-codex\` GPT models are enabled, prefer \`openai-codex/gpt-6-astra\` as a strict conservative brake on research and major architectural decisions due to tighter quota, and \`openai-codex/gpt-6.1-sol\` for lower-cost code review, debugging, or math/logic verification while explicitly instructing it to avoid defensive fallback code and redundant docs).
 3. Always bind the subagent to the current Antigravity session by passing \`antigravitySessionId\` (your Conversation ID) to \`spawn_agent\` / \`resume_agent\`, or call \`bind_session\`. Do not set custom \`policy\` caps (\`maxTotalTokens\`, \`maxModelRequests\`, \`maxRuntimeMs\`) unless the user explicitly asks for them; rely on the built-in generous defaults.
 4. Never treat \`spawn_agent\` acceptance as completion. Wait synchronously with \`wait_agent\` (forwarding \`nextSequence\` into \`after[agentId]\`) or start the background watcher returned in \`mustWait.antigravityBackgroundCommand\` (\`node ".../scripts/wait-events.js" --session <Conversation ID>\` via \`run_command\` with \`WaitMsBeforeAsync: 500\`, \`IsDaemon: false\`).
 5. Answer pending \`ask_parent\` questions immediately via \`reply_question\`.
@@ -139,11 +139,11 @@ function writeAntigravityPlugin(env) {
   fs.writeFileSync(path.join(pluginDir, 'plugin.json'), JSON.stringify({
     name: 'pi-subagents',
     displayName: 'Pi Subagents',
-    version: pkg.version || '1.6.0',
+    version: pkg.version || '1.7.0',
     description: 'Multi-model Pi subagent orchestration for Antigravity with session binding, reactive wait-events watcher, and PreInvocation/Stop hooks.',
     logo: 'assets/logo.svg',
-    author: { name: 'mumu_xsy' },
-    repository: 'https://github.com/Xuuuuu04/codex-pi-subagents',
+    author: { name: 'mumuxsy' },
+    repository: 'https://github.com/mumuxsy/pi-subagents',
     suggestedPrompts: [
       'List authenticated Pi models and check subagent runtime health',
       'Delegate parallel codebase review subagents using Pi models for this session',

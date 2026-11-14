@@ -1,87 +1,44 @@
-# CodeX 子代理拓展
+# Pi Subagents（Pi 调度台）
 
 ## 这个项目是什么
-为 Codex、Claude Code 和 Antigravity 提供 Pi 多模型子代理 MCP。每个会话独立保存，支持任务、双向消息、提问、等待、停止、恢复、临时模型切换、回调唤醒和改动查看。
+面向 Google Antigravity、Claude Code 和 OpenAI Codex 的多模型子代理调度平台，包含标准 stdio MCP 服务与实时本机控制台“Pi 调度台”。每个子代理会话由独立进程持久化托管，支持工作树隔离、双向消息、阻塞提问、断线恢复、临时模型切换、三端回调唤醒、模型能力画像配置与只读改动审查。
 
 ## 怎么运行
-- Node.js 22.19+，本机 Pi 1.0.2+、Codex 和有效模型配置。
-- `npm ci --ignore-scripts` 安装固定依赖；`npm start` 启动 stdio MCP。
-- `npm run check` 检查 JavaScript；`npm test` 检查行为，不调用真实模型。
-- `npm run install:all` 接入本机 Codex、Claude Code 和 Antigravity（也可 `install:codex` / `install:claude` / `install:antigravity`）；只改配置，不停进程。
-- `npm run wait-events -- --agent <id>` 或 `--session <id>` 后台等待子代理事件，用于唤醒 Claude Code 或 Antigravity；配合 `watchers/*.json` 记录活跃监听器。
-- `npm run dashboard` 启动或复用本机只读会话面板；默认 MCP 启动时自动启动。
-- `npm run verify:communication` 验证断线恢复与实际权限/请求限制。
-- `npm run verify:live` 真实国模验证；`node scripts/verify-codex.js` 真实 Codex 接入验证。
+- 环境要求：macOS（沙箱依赖 `/usr/bin/sandbox-exec`）、Node.js 22.19+、本机 Pi CLI 1.0.2+ 及有效模型凭据。
+- `npm ci --ignore-scripts` 安装固定依赖；`npm start` 启动 stdio MCP 服务。
+- `npm run check` 检查全部 JS / TS 语法；`npm test` 运行全量隔离测试（不调用真实付费模型）。
+- `npm run install:all` 一键接入本机 Antigravity、Claude Code 和 Codex（也可单独执行 `install:antigravity`、`install:claude`、`install:codex`）；只更新客户端配置，不中断正在运行的子代理。
+- `npm run wait-events -- --agent <id>` 或 `--session <id>` 后台等待子代理事件并唤醒 Claude Code 或 Antigravity，配合 `watchers/*.json` 记录活跃监听器心跳。
+- `npm run dashboard` 启动或复用本机“Pi 调度台”（默认 `http://127.0.0.1:3141/`，MCP 启动时默认自动拉起）。
+- `npm run verify:communication` 真机验证断线恢复与请求限制；`npm run verify:live` 真机多模型验证；`node scripts/verify-codex.js` 真机 Codex CLI 接入验证。
 
 ## 目录地图
-- `src/server.js`：MCP 工具定义与启动（含 24 个主会话工具，含会话整理与归档 `organize_agents`）。
-- `src/model-profiles.js`、`src/provider-auth.js`、`src/model-settings.js`：内置模型能力画像、Pi 工具清单、服务商凭据脱敏与本机 Codex 登录同步（`sync_codex`）、`model-settings.json` / `models-catalog.json` 严格读写与基线保留、`auth.json` / `models.json` 0600 备份与原子更新和 `pi auth check` 封装。
-- `src/quota*.js`：读取 Pi 凭据，查询 Codex、GLM、MiniMax、DeepSeek 和 OpenCode Go 额度；固定服务地址，只返回明确字段。
-- `src/controller*.js`：独立管理进程、私密 Unix socket（持久连接、断连取消与新建代理即时唤醒长轮询）、主会话身份与重连。
-- `src/message-store.js`：持久消息、重复请求和已读确认。
-- `src/agent-policy.js`、`src/tool-sandbox.js`：模型/用量限制与 macOS 工具权限。
-- `src/task-store.js`、`src/mcp-*.js`：标准 Tasks、资源、日志和进度通知。
-- `src/manager.js`：Pi 会话、模型、生命周期和等待。
-- `src/rpc-client.js`：Pi 子进程 JSONL 命令与事件。
-- `src/wait-reminder.js`：启动/派任务返回里的 `mustWait` 和 `wait_agent` 返回里的 `pending/asking/reminder`，防止主会话忘记等待。
-- `src/messages.js`：本机消息接收、问题等待与答复。
-- `src/storage.js`：私密状态和事件保存。
-- `src/workspace.js`：文件范围、独立 Git 工作目录。
-- `src/callbacks.js`：桥接进程内的回调（Claude channel、`codex queue`、Antigravity `antigravityDeliveredSeq` 游标与事件扫描）；`src/agent-changes.js`：只读改动查看。
-- `src/dashboard*.js`、`dashboard/`：面板数据（含上下文分析、PR 链接、系统状态与 watcher 检测）、私密本机服务（SSE `/api/events`、轻量实时接口 `/api/agents/:id/live`、`/api/system`、60 秒缓存 `/api/quota` 与 `/api/settings*`）、`dashboard.lock` 并发启动与模块化前端；`dashboard/conversation.js` 渲染实时对话，`dashboard/changes.js` 渲染改动与内联差异，`dashboard/charts.js` 是无依赖的 SVG 图表，`dashboard/settings*.js` 负责左下角设置弹窗。
-- `src/live-stream.js`：管理进程把正在生成的消息和工具输出写入会话目录的 `live.json`，仅供面板读取。
-- `extensions/policy.ts`：实际文件/shell 限制、启动确认与请求前检查。
-- `extensions/communication.ts`：子代理可调用的报告和提问工具。
-- `scripts/`：检查、安装（含 Antigravity 插件打包）、`antigravity-hook.js`、`wait-events.js` 和真实验收。
-- `tests/`：按功能组织的行为检查；`tests/helpers/` 为隔离 Pi 模拟进程。
-- `docs/`：安装后验证结果与协议说明。
-- `.agents/`：本机任务、证据、配置备份和运行数据；由 `.gitignore` 排除。
+- `src/server.js`、`src/server-session-tools.js`、`src/server-control-tools.js`：MCP 服务入口与 24 个主会话工具定义（含模型画像 `get_model_profiles`、会话绑定 `bind_session`、健康检查 `get_subagent_health` 与会话整理 `organize_agents`）。
+- `src/model-profiles.js`、`src/provider-auth.js`、`src/model-settings.js`：内置模型能力画像、6 个 Pi 工具清单、凭据脱敏与本机 Codex 登录同步（`sync_codex`）、`model-settings.json` / `models-catalog.json` 严格读写与基线保留、`auth.json` / `models.json` `0600` 权限备份与原子同步（含 `models[]` 与 `modelOverrides`）及 `pi auth check` 封装。
+- `src/quota*.js`：只读读取 Pi 凭据查询 Codex、智谱 GLM / Z.ai、MiniMax、DeepSeek 和 OpenCode Go 额度或余额；固定接口域名，剥离账号隐私字段。
+- `src/controller*.js`：独立后台管理进程、私密 Unix Socket（持久连接、断连取消与新建代理即时唤醒长轮询）、宿主父会话身份识别与断线重连。
+- `src/manager.js`、`src/rpc-client.js`、`src/live-stream.js`：Pi RPC JSONL 子进程管理、会话生命周期、模型切换与实时流式输出镜像（`live.json`）。
+- `src/agent-policy.js`、`src/tool-sandbox.js`、`src/benchmark-profile.js`：模型白名单与用量限制、macOS Seatbelt 三档沙箱隔离、可选 `BENCHMARK_PROMPT_PROFILE=clean` 洁净评测上下文清理。
+- `src/message-store.js`、`src/messages.js`、`src/wait-reminder.js`：幂等持久消息回执、子代理本地 HTTP 提问/汇报通道、`mustWait` 防遗忘提醒。
+- `src/callbacks.js`、`src/agent-changes.js`、`src/workspace.js`：三端回调唤醒（Antigravity `antigravityDeliveredSeq` 游标、Claude channel、`codex queue`）、只读 Git 工作树差异审查、独立 worktree 与共享 `ownedPaths` 校验。
+- `src/task-store.js`、`src/mcp-*.js`：MCP 2025-11-25 标准 Tasks、资源订阅、日志与进度通知。
+- `src/dashboard*.js`、`dashboard/`：“Pi 调度台”后端（SSE `/api/events`、`/api/agents/:id/live`、`/api/system`、60 秒缓存 `/api/quota`、`/api/settings*`、`dashboard.lock` 并发锁）与无外部前端框架依赖的 ES 模块化界面。
+- `extensions/`：注入新 Pi 子进程的权限沙箱扩展（`policy.ts`）与双向通信扩展（`communication.ts`）。
+- `scripts/`：语法检查、三端安装打包（含 Antigravity 插件校验）、`antigravity-hook.js`、`wait-events.js` 及真机验收脚本。
+- `tests/`：88 项隔离行为测试与单文件行数/注释卫生检查；`tests/helpers/` 为隔离 Pi 模拟进程。
+- `docs/`：协议与沙箱说明（`communication.md`）、验证矩阵（`verification.md`）与开源界面预览图（`assets/`）。
+- `.agents/`：本机运行状态、工作树与私密验证记录，由 `.gitignore` 排除。
 
-## 去哪里找
-- 使用步骤、工具参数含义与限制：`README.md`。
-- 实际 MCP 参数：`src/server.js`；Pi 对接命令：`src/rpc-client.js`。
-- 当前验证结果：`docs/verification.md`；原始证据：`.agents/records/`。
-- 恢复入口：`list_agents(includeSaved=true)` 后 `resume_agent`。
+## 标准写法与长期约定
+- **代码体积与风格**：`src/*.js` 与 `scripts/*.js` 单文件小于 500 行，`dashboard/*.js` 单文件小于 450 行；`dashboard/*.js`、`src/dashboard.js`、`src/dashboard-launcher.js` 等新模块禁止行内注释（由测试自动守护）。
+- **状态与凭据写入**：所有 JSON 状态与配置统一调用 `src/storage.js` 的 `atomicWriteJson` 原子写入；改写 `~/.pi/agent/auth.json` 与 `models.json` 前必须以 `0600` 权限备份，任何接口或工具结果严禁暴露明文 API Key、OAuth Token 或个人身份信息。
+- **状态严格区分**：指令传输接受（`accepted`）、进入上下文（`consumed`）、主会话确认已读（`acknowledgedAt`）、Pi 回合结束（`completed`）与业务验收通过分别处理；`agent_end` 后仍可能重试，终态以 `agent_settled` 为准。
+- **用量与默认策略**：`list_models` 与 `get_model_profiles` 默认隐藏已禁用模型；`spawn_agent` 拒绝禁用项并将默认 `thinking`、`allowNetwork`、`sandboxMode`、`loadSkills`、`loadContextFiles` 固化进会话记录；`policy.maxTotalTokens` 仅统计非缓存读取用量（`input + output + cacheWrite`），未获用户明确要求时主会话不应擅自收紧请求数、Token 或时长上限。
+- **并行与面板边界**：Git 仓库并行开发默认创建独立 worktree，共享目录必须声明不重叠的 `ownedPaths`；面板绝不直接停止或接手子代理进程，仅与 `organize_agents` 共写 `dashboard-marks.json`（运行中或等待答复的会话不可归档或手动标状态，产生新活动自动解除归档），并通过 `/api/settings*` 同源接口维护模型与脱敏凭据设置。
+- **Antigravity 唤醒去重**：通过 `spawn_agent.antigravitySessionId` 或 `bind_session` 绑定会话后，插件钩子（`PreInvocation`、`Stop`）、`wait-events --session`、`read_agent` 与 `wait_agent` 共用 `antigravityDeliveredSeq` 单调游标去重，按事件子集监听时不会跳过未投递的默认回调事件。
 
-## 数据怎么流动
-Codex 调用 MCP → 私密 Unix socket → 独立管理器创建或控制 Pi → Pi RPC 输出事件 → 保存完整事件和持久消息 → Codex 等待或读取。子代理调用报告或提问工具，通过带独立会话令牌的本机 HTTP 请求交给所属管理器；明确答复后提问工具返回。
-
-## 本项目的约定
-- 模型调用由 Pi 读取凭据；额度查询只在内存读取 Pi 凭据并发出固定域名 GET，不复制 key，不将凭据、账号身份或卡片身份返回到工具结果。
-- prompt 接受、工具结束、Pi 整体工作结束、业务检查通过分别处理。
-- 等待使用代理身份和递增事件序号；读取有长度限制，完整资料保存在会话中。
-- 并行 Git 开发默认独立 worktree；共享目录必须声明不重叠的文件范围。
-- 临时模型切换在一次工作完全结束后恢复；运行中换模型须先明确停止。
-- MCP 断开仅断开主会话；close_agent 才关闭指定 Pi。管理进程退出后显式恢复，不重复旧任务。
-- 消息接受、进入模型上下文、主会话确认已读和业务完成是不同状态。
-- 新会话只加载两个指定扩展；权限扩展没有确认启动时不得发送任务。
-- 面板不调用代理控制命令，不停止或接手任何代理；会话显示整理与 MCP `organize_agents` 共写 `dashboard-marks.json`（自定义标题、备注、置顶、归档、已结束/已关闭、移动分组、分组改名），正在工作或等待答复的会话不能标记状态或归档，且产生新活动时自动解除归档；配置管理仅通过 `/api/settings*` 更新模型启用状态、上下文与能力描述、默认策略，以及经用户确认的 Pi 服务商 Key、Base URL 或本机 Codex OAuth 导入（写 `auth.json` 和 `models.json` 前先以 0600 备份，接口按字段白名单校验且仅返回脱敏状态，禁止向浏览器或 MCP 工具暴露明文 Key 或 OAuth token）。缺少活跃控制进程的工作状态明确显示离线。
-- `list_models` 与 `get_model_profiles` 返回含上下文窗口与能力描述的目录（默认隐藏已禁用项），`spawn_agent` 拒绝已禁用模型或服务商并将设置中的默认 `thinking`、`allowNetwork`、`sandboxMode`、`loadSkills` 与 `loadContextFiles` 固化进会话记录；刷新目录时保留原始 `baseContextWindow`/`baseMaxTokens` 恢复基线。`policy.maxTotalTokens` 只累计非缓存读取用量（`input + output + cacheWrite`，不重复计入每轮重读的 `cacheRead`），主会话未获用户明确要求时不应自行收紧请求数、Token 或时长上限。
-- 面板左侧先按父会话分组：创建代理时桥接进程自报客户端类型、会话编号（Codex 的 `CODEX_THREAD_ID`、Claude Code 的 `CLAUDE_CODE_SESSION_ID`、Antigravity 的 `ANTIGRAVITY_CONVERSATION_ID` 或显式 `antigravitySessionId`）和所在目录，记在代理记录的 `parentInfo`；旧代理没有这项，面板按 `parentId` 分开并用工作目录推断。
-- Antigravity 会话通过 `spawn_agent.antigravitySessionId` 或 `bind_session` 关联；回调、插件钩子（`PreInvocation`、`Stop`）、`wait-events --session`、`read_agent` 和 `wait_agent` 共用 `antigravityDeliveredSeq` 去重，且仅按子集过滤 `--events` 时不会跳过未投递的默认回调事件。
-
-## 不要做的事
-- 不承诺 MCP 可以自动唤醒已经结束的 Codex 父会话或复制原生子代理界面。
-- 不把目录里的价格当成真实扣费记录。
-- 不靠 stdout 打印日志；stdout 只用于 MCP 协议。
-- 不吞掉 Pi 命令错误，不把工具接受任务当成完成。
-- 不自动合并、删除工作目录或部署。
-
-## 已知的坑
-- strict外置工作区需要允许祖先路径元数据，Python与SQLite会先解析路径；目录外内容仍拒绝。stateRoot内部工作区仍受更严格的状态目录规则限制，不能声称所有路径都已通过。
-- 额度窗口按返回时长分类，缺失窗口表示未知；凭据续期由 Pi 负责，额度工具不改认证文件。
-- `agent_end` 后可能继续重试，最终结束要看 `agent_settled`。
-- Pi stdout 按 LF 切 JSONL；Unicode 分隔符可以出现在合法字符串里。
-- `ask_parent` 等待期间要用 `reply_question`，普通消息只进入指令队列。
-- 新版管理进程配置沿用首次启动参数；已有代理不能自动获得新权限规则。默认用量、联网和沙箱改动后，必须重启管理进程，否则新建代理仍按旧默认值（曾因此撞上 20 万 token 上限和禁网）。
-- 沙箱三档：strict、dev、bypass（`policy.sandboxMode` 优先于 `.agents/sandbox.json`）。bypass 放开所有路径含凭据目录，只保护管理进程状态。
-- 失败或长时间无人处理的子代理，读完原因、取回结果后用 `close_agent` 关闭。
-- 回调与改动查看只在桥接进程实现，兼容已在运行的旧管理进程；新桥接检测到旧控制进程运行脚本路径不同且没有活跃子代理时，会先优雅退出空闲旧控制进程再启动新进程，否则保持兼容不强停活跃任务。
-- 当前 Codex CLI 未声明 Tasks 能力，使用普通创建/读取/等待；不得假定通知会触发模型继续执行。
-- 新增 MCP 后当前已运行的 Codex 聊天可能尚未加载；重启客户端。
-- 安装使用绝对 Node/Pi 路径；移动项目或移除对应 Node 版本后重跑安装。
-- 配置备份可能包含其他服务的凭据，仅留本机；不进入提交或报告。
-- 面板优先使用 `/api/events` SSE 实时推送并配 2 秒轮询兜底，组件只在内容变化时重建，避免淡入或转圈动画反复重播。
-- 面板展示模型返回的思考文本，不展示 thinkingSignature 等加密推理；`live.json` 只在新版管理进程中生成。
-- 面板默认端口 3141（4001 等被本机 QQ 占用），并通过 `dashboard.lock` 防止并发重复拉起；端口变化时启动器先起新面板，再退出旧的只读面板。
-- 面板普通地址自动建立 HttpOnly、SameSite=Strict 查看 cookie，内部令牌仅存本机；不允许其他网站读取、任意路径读取、远程绑定或 HTML 执行日志内容。
+## 不要做的事与已知的坑
+- 不向 `stdout` 打印普通日志（`stdout` 专供 MCP 协议帧）；Pi 子进程输出只按 `\n` 切分 JSONL。
+- 不自动合并分支、删除工作目录或执行部署；不把模型目录价格上报值（`reportedCost`）当成真实账单扣费。
+- `strict` 外置工作区依赖允许祖先目录元数据供 Python 与 SQLite 解析真实路径，状态目录内部仍严格隔离；`ask_parent` 阻塞期间必须用 `reply_question` 答复，普通 `send_message` 只进指令队列。
+- 管理进程沿用首次启动的容量与默认策略，修改全局默认限制后需重启空闲管理进程方对新建代理生效；新桥接检测到空闲旧管理进程脚本路径已变化时会自动平滑替换。

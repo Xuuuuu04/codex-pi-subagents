@@ -1,53 +1,45 @@
-# 可靠通信与权限
+# 可靠通信、权限沙箱与协议规范
 
-1.6.0 使用 MCP SDK 1.26.0，提供 23 个主会话工具（在原有 20 个工具基础上新增 `bind_session`、`get_subagent_health` 与 `get_model_profiles`），支持 MCP 2025-11-25 的资源订阅、日志、进度和实验性 Tasks。没有适用于所有代理系统的统一认证；协议兼容、实际行为检查和客户端能力分别记录。
+本文档面向希望深入了解 Pi Subagents 内部状态流转、沙箱隔离边界与 MCP 协议映射的开发者。当前 1.7.0 版本基于 `@modelcontextprotocol/sdk` 1.26.0 构建，提供 **24 个主会话工具**，同时支持 MCP 2025-11-25 的资源订阅、结构化日志、进度通知与实验性 Tasks。
 
-## 消息与恢复
+## 消息投递与断线恢复
 
-- 创建代理时提供稳定 UUID `requestId`，发送指令时提供稳定 UUID `messageId`。同一个身份与内容返回旧结果；同一个身份换内容会报错。未提供身份仍兼容普通调用，但发送者无法据此安全重试。
-- 指令先持久保存，再发送 Pi。状态 `accepted` 是 Pi 接受；`consumed` 是指令进入模型上下文；`acknowledgedAt` 是主会话调用 `ack_messages` 确认已读。这些状态都不等于业务检查通过。
-- 结果 `uncertain` 表示没有足够证据确定是否执行，不自动再发。先读取代理状态、消息和成果。这里不承诺网络、进程崩溃或服务商重试中的严格 exactly-once 执行。
-- 子代理报告和问题也有稳定身份。问题 HTTP 请求断开后不会被取消；同一身份重连仍等待原问题，已经答复则返回原答案。同一答案可以重复确认，不允许换成不同答案。
-- 全部事件保存在 JSONL；`read_agent` 分页读取不会受内存中最近 500 条记录限制。显式恢复会去掉崩溃留下的不完整末尾记录，保留已完成记录。
-- MCP 关闭仅断开主会话。私密 Unix socket 管理进程继续维护 Pi。新主会话通过 `resume_agent` 接手同一身份，可以回答原问题；另一个仍连接的主会话不能被抢占。旧主进程实际退出也允许显式接手。
-- 管理进程或电脑退出时无法保留活进程。恢复保存会话后保持空闲，旧指令和问题不重发；管理进程异常退出而 Pi 仍活着时，拒绝再开第二个副本，须先停止原进程。中断或关闭已经修改的文件不会自动还原。
-- 同一运行目录共用一个管理进程。它的数量限制由首次启动参数决定。停止管理进程会影响该目录全部代理，维护前应确认没有工作仍在运行。
+- **幂等请求身份**：创建子代理可传入稳定 UUID `requestId`，发送任务指令可传入稳定 UUID `messageId`。相同身份且内容一致的重试会直接返回原回执；相同身份但内容不同会立即报错，防止网络抖动下串改指令。
+- **四级状态区分**：指令先落盘再发往 Pi。`accepted` 表示传输层已送入 Pi 队列；`consumed` 表示指令已进入模型本轮上下文；`acknowledgedAt` 表示主会话已调用 `ack_messages` 确认读取；`completed` 表示 Pi 当前回合停止运行。这四个状态与“业务代码验收通过”严格分开，主会话接收结果后仍须核查文件差异与测试输出。
+- **不确定投递不盲目重放**：当通信中途中断导致投递状态变为 `uncertain` 时，系统不会自动重发，主会话应先调用 `read_agent`、`read_messages` 与 `get_agent_changes` 核实子代理是否已实际执行。
+- **阻塞提问持久保留**：子代理调用 `ask_parent` 产生的提问拥有独立 `questionId`。即使本地连接短暂断开，问题仍保留在管理进程中，只有主会话显式调用 `reply_question` 才会放行等待中的工具；同一问题重复确认相同答案是幂等的，换成不同答案会被拒绝。
+- **JSONL 全量落盘与尾部修复**：全部事件追加写入 `events.jsonl`，`read_agent` 按递增 `sequence` 分页读取，不受内存缓存最近 500 条的限制；恢复会话时会自动剥离异常断电留下的半行残缺记录。
+- **独立控制进程隔离**：MCP stdio 桥接关闭时只断开当前主会话，后台 Unix Socket 管理进程继续托管运行中的 Pi 子进程。新会话可通过 `list_agents(includeSaved=true)` 与 `resume_agent` 接手空闲或失联代理，但不能抢占另一个在线主会话正持有的子代理。
 
-## 执行限制
+## 执行策略与三档沙箱
 
-创建代理的 `policy` 默认如下：
+`spawn_agent` 创建子代理时的默认 `policy` 如下表所示。未收到用户明确硬性限制要求时，主会话应直接使用内置宽松默认值，不必自行收紧请求数、Token 或时长上限：
 
-| 参数 | 默认值与含义 |
-| --- | --- |
-| `allowedModels` | 只允许创建时指定的 provider/model |
-| `maxModelRequests` | 100,000 次 Pi 请求前批准轮次，按会话累计 |
-| `maxTotalTokens` | 1e12 个已报告 token（基本不限），含输入/输出/缓存，按会话累计；到 80% 时提醒代理先汇报 |
-| `maxRuntimeMs` | 每次工作 7 天，含等待答复 |
-| `maxOutputTokens` | 已支持请求格式的输出上限 128,000 |
-| `sandboxMode` | 未设置时读 `.agents/sandbox.json`，再默认 strict；可选 strict、dev、bypass |
-| `allowNetwork` | true，shell 默认可以联网，需要时可在单代理 `policy` 或设置中心关闭；模型与通信由可信 Pi 主进程处理，且 `thinking`、`allowNetwork`、`sandboxMode`、`loadSkills`、`loadContextFiles` 默认值会在创建时固化进代理记录 |
+| 参数 | 默认值 | 行为说明 |
+| --- | --- | --- |
+| `allowedModels` | 创建时指定的 `provider/model` | 限制该会话可切换的模型白名单 |
+| `maxModelRequests` | `100,000` 次 | 每次向模型服务发起请求前在管理进程预扣计数，超限立即拦截 |
+| `maxTotalTokens` | `1e12`（非缓存读取 Token） | 仅累计 `input + output + cacheWrite`，不重复计入多轮工具重读的 `cacheRead`；达到上限 80% 时自动注入提醒让子代理先汇报进展 |
+| `maxRuntimeMs` | `7` 天（`604,800,000` ms） | 单次运行最长挂钟时间（最大支持 `2,147,483,647` ms，约 24.8 天）；进程退出时立即清理定时器 |
+| `maxOutputTokens` | `128,000` | 按目标协议自动注入单次输出上限 |
+| `sandboxMode` | `strict`（或设置中心默认值） | 可选 `strict`、`dev`、`bypass`；单代理 `policy.sandboxMode` 优先于 `.agents/sandbox.json` |
+| `allowNetwork` | `true`（或设置中心默认值） | 控制子代理 shell 工具是否允许访问外网；设为 `false` 时在 Seatbelt 层拦截外部网络连接 |
 
-请求次数在请求前批准并保存，下一次达到限制就停止 Pi；Pi 会忽略扩展抛出的请求前异常，因此扩展使用进程退出阻止实际发送。运行超时会中止工作并关闭进程。token 是已经返回的用量，一次正在执行的请求可能超出阈值；服务商内部重试、实际账单和套餐扣减无法仅靠这个计数严格限制。
+### macOS Seatbelt 三档路径边界
 
-目录价格不是实际扣费；token 和请求限制不能保证精确人民币费用。额度查询也不意味着用户允许耗尽本周套餐、付费或使用重置卡。主会话先取得明确授权，并设置适用的模型、并发和用量范围。
+所有新启动的 Pi 会话只加载内置通信扩展（`extensions/communication.ts`）与权限扩展（`extensions/policy.ts`），权限扩展未完成握手确认前不会下发任何任务：
 
-macOS Seatbelt 实际限制文件工具与 shell 后代：允许读取工作目录和运行所需系统文件，只允许写声明的路径与私密工具临时目录；禁止读写认证目录和管理状态，检查符号链接，工具环境不继承 provider key 或通信 token。权限扩展必须明确确认启动，否则不发送任务。其他平台当前拒绝受限制代理；没有静默取消限制的备用方式。
+1. **`strict`（默认严格隔离）**：子代理只能读取工作目录与运行必需的系统目录（允许解析外部真实路径的祖先目录元数据以兼容 Python 和 SQLite），只能写入声明的 `ownedPaths` 与私有临时目录；禁止读写 `~/.pi`、`~/.codex`、`~/.ssh` 及管理进程状态目录。
+2. **`dev`（开发模式）**：允许子代理运行 `uv`、本地虚拟环境、构建缓存（`~/.cache`、`~/Library/Caches`）并在独立 Git 工作树内执行完整测试与本地提交，同时继续在内核层屏蔽 `~/.pi`、`~/.codex`、`~/.ssh` 与管理进程状态目录。
+3. **`bypass`（完全放开路径）**：放开工作区外及凭据目录读写权限并继承常用 `PATH`，仅继续保护管理进程状态目录（防止伪造其他代理令牌），只适用于用户明确信任的本机运维任务。
 
-这些限制针对受信任 Pi 中的模型工具执行，未提供 CPU、内存、磁盘配额或对恶意 Pi/扩展的隔离。默认禁止网络会拒绝下载依赖；需要用户允许后用 `update_agent_policy` 修改。修改前必须空闲或已经中断，传入真实 `authorizationReference`；支持 MCP elicitation 的客户端会展示具体限制供用户批准。缺少该能力时该字段是主会话声明，服务无法独立验证真人身份。更新会保留会话并重新加载工具策略，不重复旧工作，也不清零已记录用量。
+修改已有空闲代理的策略需调用 `update_agent_policy` 并附上用户指令说明 `authorizationReference`；设置 `PI_SUBAGENTS_CONFIRM_POLICY=1` 时，支持 MCP Elicitation 的客户端还会弹出交互确认表单。
 
-## 标准协议与客户端
+## 标准 MCP 协议与跨宿主唤醒
 
-- `resources/list/read/subscribe/unsubscribe`：`pi-agent://<agentId>/events`，更新时发送资源通知。
-- `notifications/message`：提问、结束、失败和用量限制的简要日志。
-- `notifications/progress`：普通等待只在该请求有效期间发送；Tasks 的进度持续到任务终止。不同请求使用各自 progressToken。
-- 支持 Tasks 的客户端调用 `run_agent_task`，使用 `tasks/get`、`tasks/result`、`tasks/list`、`tasks/cancel`。状态包含 `working`、`input_required`、`completed`、`failed`、`cancelled`。终态不继续运行；取消会中断 Pi。
-- Tasks 默认保存 24 小时，可申请 1 秒至 7 天，实际 TTL 返回给客户端。记录持久保存，过期记录定时删除或访问时删除。断线后通过 `resume_task` 显式接手，原连接的 progressToken 不继续使用。
-- 管理进程重启后未完成的标准任务显示失败并说明没有自动重做；保存的代理仍可显式恢复。
-- `get_client_capabilities` 返回当前连接实际声明的能力。2026-10-06 实测 Codex CLI 0.159.0 声明确认表单，没有声明 Tasks；普通创建/读取/等待可用。
-- 通知可以被客户端显示或处理，MCP 没有保证自动启动已结束模型回合的通用入口。1.2.0 增加宿主专用回调：Codex 用 `codex queue` 写入指定会话队列，Claude Code 用 channel 通知或后台 `wait-events` 命令。1.6.0 增加 Antigravity 会话绑定与双重唤醒：插件注册 `PreInvocation` 与 `Stop` 钩子，配合后台 `wait-events --session <id>` 写出 `watchers/<pid>.json` 活跃心跳，通过 `callbacks/<agentId>.json` 里的 `antigravityDeliveredSeq` 单调递增游标对钩子、`wait-events`、`read_agent` 和 `wait_agent` 统一去重（按事件子集监听时不会跳过未投递的默认事件）。回调先记录游标再投递，失败只记录不重发；当前仍不承诺原生子代理界面或隐藏上下文复制。
-
-## 兼容升级
-
-已有配置仍指向当前源码，不需重新复制凭据。新 MCP 连接使用新版本；1.2.0 的新功能全部在桥接进程，旧管理进程无需重启；已经运行的旧 Pi 保留旧行为及文件，不能声称已获得新权限。新旧管理器之间拒绝重叠的共享文件范围和活跃身份接手。确认旧工作结束后，再关闭或恢复它们。
-
-证据与重跑入口见 `docs/verification.md`、`npm test`、`npm run verify:communication`。本机消息、任务、日志和会话保留在 `.agents/runtime/`；包含项目内容，按私密资料处理。完整历史不自动按数量截掉，需要清理时先确认没有正在使用或唯一恢复资料。
+- **资源与通知**：暴露 `pi-agent://<agentId>/events` 可订阅资源，发生状态变化时推送 `notifications/resources/updated`、`notifications/message` 与绑定对应 `progressToken` 的 `notifications/progress`。
+- **标准异步 Tasks**：对声明支持 MCP 2025-11-25 Tasks 的客户端提供 `run_agent_task` 与 `resume_task`，完整覆盖 `working`、`input_required`、`completed`、`failed`、`cancelled` 状态流转与 TTL 过期清理（默认 24 小时，最高 7 天）。
+- **三大宿主回调唤醒**：由于标准 MCP 通知无法通用唤醒已结束本轮回复的宿主模型，系统在桥接层实现了三套宿主专用唤醒通道：
+  - **Google Antigravity**：通过 `antigravitySessionId` 或 `bind_session` 关联会话，由插件注册的 `PreInvocation` / `Stop` 钩子与后台 `scripts/wait-events.js --session <id>` 协同唤醒，依托 `callbacks/<agentId>.json` 中的 `antigravityDeliveredSeq` 单调游标与 `watchers/<pid>.json` 活跃心跳避免重复投递或漏等。
+  - **Claude Code**：支持 `notifications/claude/channel` 原生开发通道唤醒，或通用运行后台命令 `npm run wait-events -- --agent <id>` 在事件到达时唤醒主会话。
+  - **OpenAI Codex**：传入 `callback.codexThreadId` 后，桥接进程在子代理结束、提问或异常时调用 `codex queue --thread <id>` 将事件排入对应会话队列。
