@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { setup, spawn, settled } from './helpers/setup.js';
+import { defaultMaxAgents, parseMaxAgents } from '../src/manager.js';
 
 test('acceptance is distinct from completion and failures stay visible', async t => {
   const { manager, cwd } = await setup(t);
@@ -32,4 +33,19 @@ test('parallel shared ownership rejects overlap and respects capacity', async t 
   const b = await spawn(manager, cwd, 'HANG', { ownedPaths: ['other'] });
   await assert.rejects(spawn(manager, cwd, 'HANG', { ownedPaths: ['third'] }), /limit/);
   assert.notEqual(a.id, b.id);
+});
+test('settled agents do not consume concurrency capacity and default capacity is unlimited', async t => {
+  assert.equal(defaultMaxAgents, 0);
+  assert.equal(parseMaxAgents(undefined), 0);
+  assert.equal(parseMaxAgents('0'), 0);
+  assert.equal(parseMaxAgents('unlimited'), 0);
+  assert.equal(parseMaxAgents('64'), 64);
+  assert.throws(() => parseMaxAgents(-1), /non-negative integer/);
+  const { manager, cwd } = await setup(t, { maxAgents: 1 });
+  const first = await spawn(manager, cwd, 'done');
+  assert.equal((await settled(manager, first.id)).status, 'completed');
+  const second = await spawn(manager, cwd, 'HANG', { ownedPaths: ['other'] });
+  await assert.rejects(spawn(manager, cwd, 'HANG', { ownedPaths: ['third'] }), /limit/);
+  await assert.rejects(manager.send(first.id, 'more'), /limit/);
+  assert.notEqual(first.id, second.id);
 });

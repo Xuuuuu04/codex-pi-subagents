@@ -16,8 +16,15 @@ import { catalogFilesStamp, enrichModels, fetchPiRawModels, readModelSettings } 
 import { isCleanBenchmarkProfile } from './benchmark-profile.js';
 
 const extension = fileURLToPath(new URL('../extensions/communication.ts', import.meta.url));
-export const maxAgentLimit = 50;
-export const defaultMaxAgents = 50;
+export const maxAgentLimit = 500;
+export const defaultMaxAgents = 0;
+export function parseMaxAgents(value, fallback = defaultMaxAgents) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (value === Infinity || String(value).trim().toLowerCase() === 'unlimited') return 0;
+  const parsed = Number(value);
+  if (!Number.isInteger(parsed) || parsed < 0) throw new Error('maxAgents must be a non-negative integer (0 for unlimited)');
+  return parsed;
+}
 const activeStatuses = new Set(['starting', 'running', 'waiting', 'finishing']);
 const textOf = message => (message?.content || []).filter(block => block.type === 'text').map(block => block.text).join('\n');
 
@@ -25,10 +32,10 @@ const textOf = message => (message?.content || []).filter(block => block.type ==
 export class Manager extends EventEmitter {
   constructor({ root, executable = 'pi', maxAgents = defaultMaxAgents, piAgentDir = process.env.PI_CODING_AGENT_DIR, processFactory = options => new PiProcess(options) }) {
     super();
-    if (!Number.isInteger(maxAgents) || maxAgents < 1 || maxAgents > maxAgentLimit) throw new Error(`maxAgents must be an integer from 1 to ${maxAgentLimit}`);
+    const resolvedMaxAgents = parseMaxAgents(maxAgents);
     this.storage = new Storage(root);
     this.executable = executable;
-    this.maxAgents = maxAgents;
+    this.maxAgents = resolvedMaxAgents;
     this.piAgentDir = piAgentDir;
     this.processFactory = processFactory;
     this.owner = randomUUID();
@@ -73,7 +80,9 @@ export class Manager extends EventEmitter {
   }
   capacity() {
     if (this.closed) throw new Error('Controller is shutting down');
-    if ([...this.agents.values()].filter(a => a.rpc && !a.rpc.exited).length >= this.maxAgents) throw new Error(`Agent limit reached (${this.maxAgents}). Close an idle agent first.`);
+    if (!this.maxAgents) return;
+    const activeCount = [...this.agents.values()].filter(a => a.rpc && !a.rpc.exited && activeStatuses.has(a.record.status)).length;
+    if (activeCount >= this.maxAgents) throw new Error(`Agent limit reached (${this.maxAgents}). Wait for a running agent to settle first.`);
   }
   async models(provider, { includeDisabled = false } = {}) {
     const stamp = catalogFilesStamp(this.storage.root, this.piAgentDir);
@@ -236,6 +245,7 @@ export class Manager extends EventEmitter {
       if (agent.record.limitReason) { this.messages.update(id, messageId, { state: 'denied', reason: agent.record.limitReason }); throw new Error('Agent limit reached; obtain authorization and update its policy before more work.'); }
       const busy = activeStatuses.has(agent.record.status);
       if (!busy) {
+        this.capacity();
         agent.record.runStartedAt = Date.now();
         clearTimeout(agent.runtimeTimer);
         agent.runtimeTimer = setTimeout(() => {

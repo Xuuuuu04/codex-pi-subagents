@@ -5,7 +5,7 @@ import http from 'node:http';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 import { randomUUID, timingSafeEqual, createHash } from 'node:crypto';
-import { Manager, defaultMaxAgents } from './manager.js';
+import { Manager, defaultMaxAgents, parseMaxAgents } from './manager.js';
 import { processAlive, atomicWriteJson } from './storage.js';
 import { normalizeParentInfo } from './controller-client.js';
 import { FileTaskStore } from './task-store.js';
@@ -26,7 +26,7 @@ if (fs.existsSync(lock)) {
 }
 try { fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }), { flag: 'wx', mode: 0o600 }); }
 catch (error) { if (error.code === 'EEXIST') process.exit(0); throw error; }
-const manager = await new Manager({ root, executable: process.env.PI_EXECUTABLE || 'pi', maxAgents: Number(process.env.PI_SUBAGENTS_MAX_AGENTS || defaultMaxAgents) }).start();
+const manager = await new Manager({ root, executable: process.env.PI_EXECUTABLE || 'pi', maxAgents: parseMaxAgents(process.env.PI_SUBAGENTS_MAX_AGENTS, defaultMaxAgents) }).start();
 const parents = new Map();
 const parentWake = new EventEmitter();
 parentWake.setMaxListeners(0);
@@ -171,7 +171,7 @@ function waitParentEvents(owned, parentId, after = {}, timeoutMs = 20000, signal
 async function dispatch(parentId, method, v, signal) {
   if (method === 'health') {
     const activeAgents = [...manager.agents.values()].filter(a => activeAgentStatuses.has(a.record.status)).length;
-    return { service: 'pi-controller', pid: process.pid, scriptPath: controllerScriptPath, piAgentDir: process.env.PI_CODING_AGENT_DIR || '', activeAgents, totalAgents: manager.agents.size };
+    return { service: 'pi-controller', pid: process.pid, scriptPath: controllerScriptPath, piAgentDir: process.env.PI_CODING_AGENT_DIR || '', activeAgents, totalAgents: manager.agents.size, maxAgents: manager.maxAgents };
   }
   if (method === 'attach') {
     const identity = normalizeParentInfo(v.parent, parents.get(parentId)?.identity);

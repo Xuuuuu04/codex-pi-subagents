@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { Manager, defaultMaxAgents, maxAgentLimit } from './manager.js';
+import { Manager, defaultMaxAgents, maxAgentLimit, parseMaxAgents } from './manager.js';
 import { connectController, normalizeParentInfo } from './controller-client.js';
 import { FileTaskStore, RemoteTaskStore } from './task-store.js';
 import { installCommunication } from './mcp-communication.js';
@@ -281,7 +281,7 @@ export async function createServer(options = {}) {
   const managerOptions = {
     root: options.root || process.env.PI_SUBAGENTS_STATE_DIR || path.join(projectRoot, '.agents/runtime'),
     executable: options.executable || process.env.PI_EXECUTABLE || 'pi',
-    maxAgents: options.maxAgents || Number(process.env.PI_SUBAGENTS_MAX_AGENTS || defaultMaxAgents),
+    maxAgents: parseMaxAgents(options.maxAgents ?? process.env.PI_SUBAGENTS_MAX_AGENTS, defaultMaxAgents),
     ...(options.piAgentDir ? { piAgentDir: options.piAgentDir } : {}),
     ...(options.processFactory ? { processFactory: options.processFactory } : {}),
   };
